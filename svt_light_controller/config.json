@@ -1,0 +1,24 @@
+{
+  "name": "SVT Light Controller",
+  "version": "0.2.0",
+  "slug": "svt_light_controller",
+  "description": "MQTT-based controller runner for SVT Light Controller.",
+  "arch": ["amd64", "aarch64", "armv7", "armhf"],
+  "startup": "services",
+  "boot": "auto",
+  "init": false,
+  "options": {
+    "mqtt_host": "core-mosquitto",
+    "mqtt_port": 1883,
+    "mqtt_username": "",
+    "mqtt_password": "",
+    "log_level": "info"
+  },
+  "schema": {
+    "mqtt_host": "str",
+    "mqtt_port": "port",
+    "mqtt_username": "str?",
+    "mqtt_password": "password?",
+    "log_level": "list(trace|debug|info|warning|error)"
+  }
+}
