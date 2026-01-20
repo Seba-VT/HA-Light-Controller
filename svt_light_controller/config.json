@@ -1,24 +1,33 @@
 {
   "name": "SVT Light Controller",
-  "version": "0.2.0",
+  "version": "0.5.8",
   "slug": "svt_light_controller",
-  "description": "MQTT-based controller runner for SVT Light Controller.",
+  "description": "MQTT-based controller runner with web UI.",
   "arch": ["amd64", "aarch64", "armv7", "armhf"],
   "startup": "services",
   "boot": "auto",
   "init": false,
+  "ingress": true,
+  "ingress_port": 8099,
+  "panel_title": "SVT Light Controller",
+  "panel_icon": "mdi:lightbulb-group",
+  "homeassistant_api": true,
+  "hassio_api": true,
+  "map": ["config:rw"],
   "options": {
     "mqtt_host": "core-mosquitto",
     "mqtt_port": 1883,
     "mqtt_username": "",
     "mqtt_password": "",
-    "log_level": "info"
+    "log_level": "info",
+    "circadian_interval": 60
   },
   "schema": {
     "mqtt_host": "str",
     "mqtt_port": "port",
     "mqtt_username": "str?",
     "mqtt_password": "password?",
-    "log_level": "list(trace|debug|info|warning|error)"
+    "log_level": "list(trace|debug|info|warning|error)",
+    "circadian_interval": "int(1,3600)"
   }
 }

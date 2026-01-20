@@ -10,7 +10,6 @@ from homeassistant.components import mqtt
 
 ATTR_BRIGHTNESS = light_platform.ATTR_BRIGHTNESS
 ATTR_COLOR_MODE = getattr(light_platform, "ATTR_COLOR_MODE", "color_mode")
-ATTR_COLOR_TEMP = light_platform.ATTR_COLOR_TEMP
 ATTR_COLOR_TEMP_KELVIN = getattr(light_platform, "ATTR_COLOR_TEMP_KELVIN", "color_temp_kelvin")
 ATTR_HS_COLOR = light_platform.ATTR_HS_COLOR
 ATTR_RGB_COLOR = light_platform.ATTR_RGB_COLOR
@@ -28,6 +27,8 @@ except AttributeError:
     EFFECT_FEATURE = getattr(light_platform, "SUPPORT_EFFECT", 0)
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
@@ -38,6 +39,7 @@ from .const import (
     DOMAIN,
     SVTLC_PREFIX,
 )
+from .data import get_all_controllers
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,6 +97,15 @@ def _select_color_mode(supported: set[ColorMode]) -> ColorMode | None:
     return None
 
 
+
+def _mireds_to_kelvin(value) -> int | None:
+    try:
+        mireds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if mireds <= 0:
+        return None
+    return int(1000000 / mireds)
 def _color_payload_from_kwargs(kwargs: dict) -> tuple[str | None, dict]:
     color_payload: dict = {}
     color_mode = kwargs.get(ATTR_COLOR_MODE)
@@ -116,9 +127,11 @@ def _color_payload_from_kwargs(kwargs: dict) -> tuple[str | None, dict]:
     elif ATTR_XY_COLOR in kwargs:
         color_payload["xy_color"] = kwargs[ATTR_XY_COLOR]
         color_mode = color_mode or "xy"
-    elif ATTR_COLOR_TEMP in kwargs:
-        color_payload["color_temp"] = kwargs[ATTR_COLOR_TEMP]
-        color_mode = color_mode or "color_temp"
+    elif "color_temp" in kwargs:
+        color_temp_kelvin = _mireds_to_kelvin(kwargs.get("color_temp"))
+        if color_temp_kelvin is not None:
+            color_payload["color_temp_kelvin"] = color_temp_kelvin
+            color_mode = color_mode or "color_temp"
     elif ATTR_COLOR_TEMP_KELVIN in kwargs:
         color_payload["color_temp_kelvin"] = kwargs[ATTR_COLOR_TEMP_KELVIN]
         color_mode = color_mode or "color_temp"
@@ -131,30 +144,70 @@ def _color_payload_from_kwargs(kwargs: dict) -> tuple[str | None, dict]:
 
 async def async_setup_platform(hass: HomeAssistant, config, async_add_entities, discovery_info=None):
     """Set up SVT Light Controller lights from YAML configuration."""
-    domain_config = hass.data.get(DOMAIN)
-    if not domain_config:
-        return
+    manager = SvtLightControllerManager(hass, async_add_entities)
+    hass.data.setdefault(DOMAIN, {})["manager"] = manager
 
-    if "mqtt" not in hass.config.components:
-        _LOGGER.error("MQTT integration is not loaded; configure MQTT before SVTLC.")
-        return
+    await manager.async_update(get_all_controllers(hass))
 
-    await mqtt.async_wait_for_mqtt_client(hass)
 
-    controllers = domain_config.get(CONF_CONTROLLERS, [])
-    entities: list[LightEntity] = []
+async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
+    """Set up SVT Light Controller lights from a config entry."""
+    manager = hass.data.setdefault(DOMAIN, {}).get("manager")
+    if not manager:
+        manager = SvtLightControllerManager(hass, async_add_entities)
+        hass.data[DOMAIN]["manager"] = manager
 
-    for controller in controllers:
-        entities.append(
-            SvtLightControllerLight(
-                name=controller[CONF_NAME],
-                unique_id=controller[CONF_UNIQUE_ID],
-                input_lights=controller[CONF_INPUT_LIGHTS],
-                hass=hass,
+    await manager.async_update(get_all_controllers(hass))
+
+
+class SvtLightControllerManager:
+    def __init__(self, hass: HomeAssistant, async_add_entities) -> None:
+        self._hass = hass
+        self._async_add_entities = async_add_entities
+        self._entities: dict[str, SvtLightControllerLight] = {}
+
+    async def async_update(self, controllers: list[dict]) -> None:
+        if "mqtt" not in self._hass.config.components:
+            _LOGGER.error("MQTT integration is not loaded; configure MQTT before SVTLC.")
+            return
+
+        await mqtt.async_wait_for_mqtt_client(self._hass)
+
+        next_ids: set[str] = set()
+        new_entities: list[SvtLightControllerLight] = []
+
+        for controller in controllers:
+            try:
+                name = controller[CONF_NAME]
+                unique_id = controller[CONF_UNIQUE_ID]
+                input_lights = controller[CONF_INPUT_LIGHTS]
+            except KeyError:
+                continue
+
+            controller_id = _normalize_unique_id(unique_id)
+            next_ids.add(controller_id)
+
+            if controller_id in self._entities:
+                await self._entities[controller_id].async_apply_config(name, input_lights)
+                continue
+
+            entity = SvtLightControllerLight(
+                name=name,
+                unique_id=unique_id,
+                input_lights=input_lights,
+                hass=self._hass,
             )
-        )
+            self._entities[controller_id] = entity
+            new_entities.append(entity)
 
-    async_add_entities(entities)
+        if new_entities:
+            self._async_add_entities(new_entities)
+
+        for controller_id in list(self._entities.keys()):
+            if controller_id in next_ids:
+                continue
+            entity = self._entities.pop(controller_id)
+            await entity.async_remove()
 
 
 class SvtLightControllerLight(LightEntity):
@@ -168,7 +221,8 @@ class SvtLightControllerLight(LightEntity):
     def __init__(self, name: str, unique_id: str, input_lights: list[str], hass: HomeAssistant) -> None:
         self._input_lights = input_lights
         self._hass = hass
-        self._attr_name = f"{SVTLC_PREFIX} {name}"
+        self._attr_name = name
+        self._device_name = f"SVTLC {name}"
         self._controller_id = _normalize_unique_id(unique_id)
         self._attr_unique_id = self._controller_id
         self._topic_base = f"svtlc/{self._controller_id}"
@@ -181,14 +235,47 @@ class SvtLightControllerLight(LightEntity):
         self._unsub_mqtt_command = None
         self._state = None
         self._attr_brightness = None
-        self._attr_min_mireds = None
-        self._attr_max_mireds = None
+        self._attr_min_color_temp_kelvin = None
+        self._attr_max_color_temp_kelvin = None
         self._attr_effect_list = []
         self._attr_effect = None
+
+    async def async_apply_config(self, name: str, input_lights: list[str]) -> None:
+        if name:
+            self._attr_name = name
+        self._device_name = f"SVTLC {name}"
+
+        if input_lights != self._input_lights:
+            self._input_lights = input_lights
+            if self._unsub_tracker:
+                self._unsub_tracker()
+                self._unsub_tracker = None
+
+            @callback
+            def _handle_state_change(event) -> None:
+                self._hass.async_create_task(self._publish_inputs())
+
+            self._unsub_tracker = async_track_state_change_event(
+                self._hass,
+                self._input_lights,
+                _handle_state_change,
+            )
+
+        await self._publish_inputs()
+        self.async_write_ha_state()
 
     @property
     def is_on(self) -> bool | None:
         return self._state
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._controller_id)},
+            "name": self._device_name,
+            "manufacturer": "SVT",
+            "model": "SVT Light Controller",
+        }
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -200,6 +287,7 @@ class SvtLightControllerLight(LightEntity):
         }
 
     async def async_added_to_hass(self) -> None:
+        await self._ensure_device_link()
         self._unsub_mqtt_output = await mqtt.async_subscribe(
             self._hass,
             self._topic_output,
@@ -283,6 +371,28 @@ class SvtLightControllerLight(LightEntity):
         self._attr_brightness = None
         self.async_write_ha_state()
 
+    async def _ensure_device_link(self) -> None:
+        try:
+            entries = self._hass.config_entries.async_entries(DOMAIN)
+            if not entries:
+                return
+            config_entry_id = entries[0].entry_id
+
+            device_registry = dr.async_get(self._hass)
+            device = device_registry.async_get_or_create(
+                config_entry_id=config_entry_id,
+                identifiers={(DOMAIN, self._controller_id)},
+                name=self._device_name,
+                manufacturer="SVT",
+                model="SVT Light Controller",
+            )
+
+            entity_registry = er.async_get(self._hass)
+            entity = entity_registry.async_get(self.entity_id)
+            if entity and entity.device_id != device.id:
+                entity_registry.async_update_entity(self.entity_id, device_id=device.id)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to link SVTLC device")
     async def _publish_inputs(self) -> None:
         states = {}
         for entity_id in self._input_lights:
@@ -294,6 +404,8 @@ class SvtLightControllerLight(LightEntity):
                     "supported_color_modes": None,
                     "min_mireds": None,
                     "max_mireds": None,
+                    "effect_list": None,
+                    "effect": None,
                 }
                 continue
 
@@ -320,7 +432,7 @@ class SvtLightControllerLight(LightEntity):
                 "rgbw_color": attrs.get(ATTR_RGBW_COLOR) if ATTR_RGBW_COLOR else None,
                 "rgbww_color": attrs.get(ATTR_RGBWW_COLOR) if ATTR_RGBWW_COLOR else None,
                 "xy_color": attrs.get(ATTR_XY_COLOR),
-                "color_temp": attrs.get(ATTR_COLOR_TEMP),
+                "color_temp": attrs.get("color_temp"),
                 "color_temp_kelvin": attrs.get(ATTR_COLOR_TEMP_KELVIN),
             }
 
@@ -363,10 +475,12 @@ class SvtLightControllerLight(LightEntity):
 
             min_mireds = payload.get("min_mireds")
             max_mireds = payload.get("max_mireds")
-            if isinstance(min_mireds, int):
-                self._attr_min_mireds = min_mireds
-            if isinstance(max_mireds, int):
-                self._attr_max_mireds = max_mireds
+            min_kelvin = _mireds_to_kelvin(max_mireds)
+            max_kelvin = _mireds_to_kelvin(min_mireds)
+            if isinstance(min_kelvin, int):
+                self._attr_min_color_temp_kelvin = min_kelvin
+            if isinstance(max_kelvin, int):
+                self._attr_max_color_temp_kelvin = max_kelvin
 
             effect_list = payload.get("effect_list")
             if isinstance(effect_list, list):
@@ -402,19 +516,29 @@ class SvtLightControllerLight(LightEntity):
             if isinstance(xy_color, (list, tuple)) and len(xy_color) == 2:
                 self._attr_xy_color = tuple(xy_color)
 
-            color_temp = payload.get("color_temp")
-            if isinstance(color_temp, (int, float)):
-                self._attr_color_temp = int(color_temp)
-
             color_temp_kelvin = payload.get("color_temp_kelvin")
             if isinstance(color_temp_kelvin, (int, float)):
                 self._attr_color_temp_kelvin = int(color_temp_kelvin)
+            else:
+                color_temp = payload.get("color_temp")
+                color_temp_kelvin = _mireds_to_kelvin(color_temp)
+                if isinstance(color_temp_kelvin, int):
+                    self._attr_color_temp_kelvin = color_temp_kelvin
 
             if payload.get("color_mode"):
                 try:
                     self._attr_color_mode = ColorMode(payload["color_mode"])
                 except ValueError:
                     pass
+
+            if self._attr_color_mode == ColorMode.COLOR_TEMP:
+                self._attr_hs_color = None
+                self._attr_rgb_color = None
+                self._attr_rgbw_color = None
+                self._attr_rgbww_color = None
+                self._attr_xy_color = None
+            elif self._attr_color_mode is not None:
+                self._attr_color_temp_kelvin = None
 
             self.async_write_ha_state()
             return
@@ -507,7 +631,9 @@ class SvtLightControllerLight(LightEntity):
             elif xy_color is not None:
                 data[ATTR_XY_COLOR] = xy_color
             elif color_temp is not None:
-                data[ATTR_COLOR_TEMP] = color_temp
+                color_temp_kelvin = _mireds_to_kelvin(color_temp)
+                if color_temp_kelvin is not None:
+                    data[ATTR_COLOR_TEMP_KELVIN] = color_temp_kelvin
             elif color_temp_kelvin is not None:
                 data[ATTR_COLOR_TEMP_KELVIN] = color_temp_kelvin
         elif command == "set_effect_inputs":
@@ -528,3 +654,28 @@ class SvtLightControllerLight(LightEntity):
                 blocking=False,
             )
         )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

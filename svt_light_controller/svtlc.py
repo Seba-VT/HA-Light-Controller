@@ -3,15 +3,30 @@
 import json
 import logging
 import math
+import os
 import statistics
 import time
 from collections import Counter
+from datetime import datetime, timedelta, timezone
+from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import paho.mqtt.client as mqtt
 
 OPTIONS_PATH = "/data/options.json"
+CONFIG_PATH = "/config/svtlc_controllers.json"
+RUNTIME_PATH = "/config/svtlc_runtime.json"
 TOPIC_INPUTS = "svtlc/+/inputs"
 TOPIC_EVENTS = "svtlc/+/event"
+TOPIC_CIRCADIAN_SET = "svtlc/+/circadian/set"
+TOPIC_CIRCADIAN_STATE = "svtlc/{}/circadian"
+TOPIC_LIMITS_SET = "svtlc/+/limits/set"
+TOPIC_LIMITS_STATE = "svtlc/{}/limits"
+TOPIC_MODE_SET = "svtlc/+/mode/set"
+TOPIC_MODE_STATE = "svtlc/{}/mode"
+SUN_ENTITY_ID = "sun.sun"
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
+HA_CONFIG_URL = "http://supervisor/core/api/config"
 
 
 def _load_options() -> dict:
@@ -34,6 +49,634 @@ def _parse_payload(payload: bytes | str):
         return text
 
 
+
+def _normalize_controller_id(value: str) -> str:
+    return f"svtlc_{value.strip().lower().replace(' ', '_')}"
+
+
+def _load_controllers_config() -> dict:
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {"controllers": [], "master": {}}
+    except json.JSONDecodeError:
+        return {"controllers": [], "master": {}}
+
+    if isinstance(payload, list):
+        return {"controllers": payload, "master": {}}
+
+    if not isinstance(payload, dict):
+        return {"controllers": [], "master": {}}
+
+    controllers = payload.get("controllers")
+    master = payload.get("master") if isinstance(payload.get("master"), dict) else {}
+    return {
+        "controllers": controllers if isinstance(controllers, list) else [],
+        "master": master,
+    }
+
+
+def _write_config_payload(payload: dict) -> None:
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    tmp_path = f"{CONFIG_PATH}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    os.replace(tmp_path, CONFIG_PATH)
+
+
+def _read_runtime_payload() -> dict:
+    if not os.path.exists(RUNTIME_PATH):
+        return {"circadian_interval": 60}
+    try:
+        with open(RUNTIME_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {"circadian_interval": 60}
+    if isinstance(data, dict):
+        interval = data.get("circadian_interval")
+        if isinstance(interval, int) and 1 <= interval <= 3600:
+            return {"circadian_interval": interval}
+    return {"circadian_interval": 60}
+
+
+def _update_circadian_settings(controller_id: str, brightness_enabled: bool | None, color_temp_enabled: bool | None) -> bool:
+    payload = _load_controllers_config()
+    updated = False
+
+    for controller in payload.get("controllers", []):
+        if not isinstance(controller, dict):
+            continue
+        unique_id = controller.get("unique_id") or controller.get("name")
+        if not isinstance(unique_id, str) or not unique_id:
+            continue
+        if _normalize_controller_id(unique_id) != controller_id:
+            continue
+
+        circadian = controller.get("circadian")
+        if not isinstance(circadian, dict):
+            circadian = {}
+            controller["circadian"] = circadian
+
+        if brightness_enabled is not None:
+            circadian["brightness_enabled"] = bool(brightness_enabled)
+            updated = True
+        if color_temp_enabled is not None:
+            circadian["color_temp_enabled"] = bool(color_temp_enabled)
+            updated = True
+
+    if updated:
+        _write_config_payload(payload)
+
+    return updated
+
+
+def _normalize_limits(limits: dict | None) -> dict:
+    if not isinstance(limits, dict):
+        limits = {}
+
+    def _to_int(value, fallback: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    def _clamp(value: int, min_value: int, max_value: int) -> int:
+        return max(min_value, min(max_value, int(value)))
+
+    brightness_min = _clamp(_to_int(limits.get("brightness_min_pct"), 1), 1, 100)
+    brightness_max = _clamp(_to_int(limits.get("brightness_max_pct"), 100), 1, 100)
+    if brightness_min > brightness_max:
+        brightness_min, brightness_max = brightness_max, brightness_min
+
+    ct_min = _clamp(_to_int(limits.get("ct_min_kelvin"), 2000), 1500, 8000)
+    ct_max = _clamp(_to_int(limits.get("ct_max_kelvin"), 6500), 1500, 8000)
+    if ct_min > ct_max:
+        ct_min, ct_max = ct_max, ct_min
+
+    weather_min = _clamp(_to_int(limits.get("weather_min_kelvin"), 2300), 1500, 8000)
+
+    return {
+        "brightness_min_pct": brightness_min,
+        "brightness_max_pct": brightness_max,
+        "ct_min_kelvin": ct_min,
+        "ct_max_kelvin": ct_max,
+        "weather_min_kelvin": weather_min,
+    }
+
+
+def _update_limits(controller_id: str, payload: dict) -> bool:
+    config = _load_controllers_config()
+    updated = False
+
+    for controller in config.get("controllers", []):
+        if not isinstance(controller, dict):
+            continue
+        unique_id = controller.get("unique_id") or controller.get("name")
+        if not isinstance(unique_id, str) or not unique_id:
+            continue
+        if _normalize_controller_id(unique_id) != controller_id:
+            continue
+
+        current_limits = _normalize_limits(controller.get("limits"))
+        merged_limits = dict(current_limits)
+
+        for key in ("brightness_min_pct", "brightness_max_pct", "ct_min_kelvin", "ct_max_kelvin", "weather_min_kelvin"):
+            if key in payload and isinstance(payload[key], (int, float)):
+                merged_limits[key] = int(round(payload[key]))
+
+        normalized = _normalize_limits(merged_limits)
+        if normalized != current_limits:
+            controller["limits"] = normalized
+            updated = True
+
+    if updated:
+        _write_config_payload(config)
+
+    return updated
+
+
+def _normalize_mode(value: str | None) -> str:
+    if not isinstance(value, str):
+        return "Circadian"
+    cleaned = value.strip().lower()
+    modes = {
+        "circadian": "Circadian",
+        "manual": "Manual",
+        "wakeup": "WakeUp",
+        "sleep": "Sleep",
+        "night": "Night",
+        "away": "Away",
+    }
+    return modes.get(cleaned, "Circadian")
+
+
+def _update_mode(controller_id: str, mode: str) -> bool:
+    payload = _load_controllers_config()
+    updated = False
+    normalized = _normalize_mode(mode)
+
+    for controller in payload.get("controllers", []):
+        if not isinstance(controller, dict):
+            continue
+        unique_id = controller.get("unique_id") or controller.get("name")
+        if not isinstance(unique_id, str) or not unique_id:
+            continue
+        if _normalize_controller_id(unique_id) != controller_id:
+            continue
+
+        if controller.get("mode") != normalized:
+            controller["mode"] = normalized
+            updated = True
+
+    if updated:
+        _write_config_payload(payload)
+
+    return updated
+
+
+def _publish_mode_state(client, controller_id: str, mode: str) -> None:
+    state_topic = TOPIC_MODE_STATE.format(controller_id)
+    payload = {"mode": _normalize_mode(mode)}
+    client.publish(state_topic, json.dumps(payload), qos=0, retain=True)
+
+
+def _sync_mode_with_switches(
+    controller_id: str,
+    controller_cfg: dict | None,
+    brightness_enabled: bool,
+    color_temp_enabled: bool,
+    current_mode: str | None = None,
+) -> str:
+    raw_mode = current_mode
+    if raw_mode is None and isinstance(controller_cfg, dict):
+        raw_mode = controller_cfg.get("mode")
+    has_mode = isinstance(raw_mode, str)
+    mode_value = _normalize_mode(raw_mode)
+
+    if mode_value not in ("Circadian", "Manual") and has_mode:
+        return mode_value
+
+    desired = "Circadian" if (brightness_enabled or color_temp_enabled) else "Manual"
+    if desired != mode_value:
+        _update_mode(controller_id, desired)
+    return desired
+
+
+def _publish_circadian_state(client, controller_id: str, brightness_enabled: bool, color_temp_enabled: bool) -> None:
+    state_topic = TOPIC_CIRCADIAN_STATE.format(controller_id)
+    payload = {
+        "brightness_enabled": bool(brightness_enabled),
+        "color_temp_enabled": bool(color_temp_enabled),
+    }
+    client.publish(state_topic, json.dumps(payload), qos=0, retain=True)
+
+
+def _set_circadian_flags(
+    client,
+    controller_id: str,
+    last_settings: dict[str, dict],
+    brightness_enabled: bool | None = None,
+    color_temp_enabled: bool | None = None,
+    persist: bool = False,
+) -> None:
+    current = last_settings.get(controller_id, {"brightness_enabled": True, "color_temp_enabled": True})
+    next_state = {
+        "brightness_enabled": current.get("brightness_enabled", True),
+        "color_temp_enabled": current.get("color_temp_enabled", True),
+    }
+
+    if brightness_enabled is not None:
+        next_state["brightness_enabled"] = bool(brightness_enabled)
+    if color_temp_enabled is not None:
+        next_state["color_temp_enabled"] = bool(color_temp_enabled)
+
+    if next_state == current:
+        return
+
+    if persist:
+        _update_circadian_settings(controller_id, brightness_enabled, color_temp_enabled)
+
+    last_settings[controller_id] = next_state
+    _publish_circadian_state(
+        client,
+        controller_id,
+        next_state["brightness_enabled"],
+        next_state["color_temp_enabled"],
+    )
+
+
+def _parse_iso(ts: str) -> datetime | None:
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _fetch_sun_times() -> dict | None:
+    if not SUPERVISOR_TOKEN:
+        return None
+    url = f"http://supervisor/core/api/states/{SUN_ENTITY_ID}"
+    req = Request(url)
+    req.add_header("Authorization", f"Bearer {SUPERVISOR_TOKEN}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    return data.get("attributes") if isinstance(data.get("attributes"), dict) else None
+
+
+def _fetch_ha_config() -> dict | None:
+    if not SUPERVISOR_TOKEN:
+        return None
+    req = Request(HA_CONFIG_URL)
+    req.add_header("Authorization", f"Bearer {SUPERVISOR_TOKEN}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _fetch_entity_state(entity_id: str) -> dict | None:
+    if not SUPERVISOR_TOKEN or not entity_id:
+        return None
+    url = f"http://supervisor/core/api/states/{entity_id}"
+    req = Request(url)
+    req.add_header("Authorization", f"Bearer {SUPERVISOR_TOKEN}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _parse_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_visibility_km(state: dict | None) -> float | None:
+    if not state:
+        return None
+    value = _parse_float(state.get("state"))
+    if value is None:
+        return None
+    unit = None
+    attrs = state.get("attributes")
+    if isinstance(attrs, dict):
+        unit = attrs.get("unit_of_measurement")
+    if isinstance(unit, str) and unit.lower() in {"m", "meter", "meters"}:
+        return value / 1000.0
+    if isinstance(unit, str) and unit.lower() in {"km", "kilometer", "kilometers"}:
+        return value
+    return value / 1000.0 if value > 1000 else value
+
+
+def _normalize_weather_config(master: dict) -> dict:
+    weather = master.get("weather") if isinstance(master, dict) else {}
+    if not isinstance(weather, dict):
+        weather = {}
+    return {
+        "cloud_sensor": str(weather.get("cloud_sensor") or ""),
+        "uv_sensor": str(weather.get("uv_sensor") or ""),
+        "visibility_sensor": str(weather.get("visibility_sensor") or ""),
+        "weather_code_sensor": str(weather.get("weather_code_sensor") or ""),
+        "uv_max": max(1.0, float(weather.get("uv_max", 8))),
+        "visibility_max_km": max(1.0, float(weather.get("visibility_max_km", 10))),
+        "max_reduction_pct": max(0.0, min(100.0, float(weather.get("max_reduction_pct", 60)))),
+    }
+
+def _normalize_smoothing_config(master: dict) -> dict:
+    smoothing = master.get("smoothing") if isinstance(master, dict) else {}
+    if not isinstance(smoothing, dict):
+        smoothing = {}
+    try:
+        brightness_rate = float(smoothing.get("brightness_rate_pct", 0.11))
+    except (TypeError, ValueError):
+        brightness_rate = 0.11
+    try:
+        ct_rate = float(smoothing.get("ct_rate_k", 2.67))
+    except (TypeError, ValueError):
+        ct_rate = 2.67
+    return {
+        "brightness_rate_pct": max(0.0, min(100.0, brightness_rate)),
+        "ct_rate_k": max(0.0, ct_rate),
+    }
+
+
+def _compute_clarity(weather_values: dict, config: dict) -> tuple[float | None, bool]:
+    uv = _parse_float(weather_values.get("uv_index"))
+    cloud = _parse_float(weather_values.get("cloud_coverage"))
+    visibility_km = weather_values.get("visibility_km")
+    code = _parse_float(weather_values.get("weather_code"))
+
+    precip = code is not None and code < 800
+
+    weights = {"uv": 0.55, "cloud": 0.25, "visibility": 0.2}
+    total = 0.0
+    value = 0.0
+
+    if uv is not None:
+        uv_norm = max(0.0, min(1.0, uv / config["uv_max"]))
+        value += uv_norm * weights["uv"]
+        total += weights["uv"]
+
+    if cloud is not None:
+        cloud_norm = max(0.0, min(1.0, 1.0 - (cloud / 100.0)))
+        value += cloud_norm * weights["cloud"]
+        total += weights["cloud"]
+
+    if visibility_km is not None:
+        vis_norm = max(0.0, min(1.0, visibility_km / config["visibility_max_km"]))
+        value += vis_norm * weights["visibility"]
+        total += weights["visibility"]
+
+    if total == 0:
+        return None, precip
+
+    return value / total, precip
+
+
+def _apply_weather_ct_with_reduction(
+    color_temp: int | None, limits: dict, weather: dict
+) -> tuple[int | None, float | None]:
+    if color_temp is None:
+        return None, None
+
+    weather_min = limits.get("weather_min_kelvin")
+    if not isinstance(weather_min, int):
+        weather_min = limits.get("ct_min_kelvin")
+    if not isinstance(weather_min, int):
+        return color_temp, None
+
+    weather_min = max(limits.get("ct_min_kelvin", weather_min), min(limits.get("ct_max_kelvin", weather_min), weather_min))
+    span = color_temp - weather_min
+    if span <= 0:
+        return color_temp, 0.0
+
+    if weather.get("precip"):
+        return weather_min, 100.0
+
+    clarity = weather.get("clarity")
+    if clarity is None:
+        return color_temp, 0.0
+
+    cloudiness = max(0.0, min(1.0, 1.0 - clarity))
+    reduction_pct = cloudiness * weather.get("max_reduction_pct", 0.0)
+    if reduction_pct <= 0:
+        return color_temp, 0.0
+    adjusted = color_temp - (span * reduction_pct / 100.0)
+    adjusted = max(weather_min, min(color_temp, adjusted))
+    actual_reduction = max(0.0, min(100.0, ((color_temp - adjusted) / span) * 100.0))
+    return int(round(adjusted)), actual_reduction
+
+
+def _sun_day_fraction(now: datetime, sun_attrs: dict | None) -> float:
+    if sun_attrs:
+        next_rising = _parse_iso(sun_attrs.get("next_rising"))
+        if next_rising:
+            if next_rising > now:
+                last_rising = next_rising - timedelta(days=1)
+            else:
+                last_rising = next_rising
+            span = (next_rising - last_rising).total_seconds()
+            if span > 0:
+                elapsed = (now - last_rising).total_seconds()
+                return max(0.0, min(1.0, elapsed / span))
+
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return (now - midnight).total_seconds() / 86400.0
+
+
+def _today_sun_times(now: datetime, sun_attrs: dict | None) -> tuple[float | None, float | None]:
+    if not sun_attrs:
+        return None, None
+    next_rising = _parse_iso(sun_attrs.get("next_rising"))
+    next_setting = _parse_iso(sun_attrs.get("next_setting"))
+    if not next_rising or not next_setting:
+        return None, None
+
+    sunrise = next_rising if next_rising.date() == now.date() else next_rising - timedelta(days=1)
+    sunset = next_setting if next_setting.date() == now.date() else next_setting - timedelta(days=1)
+    return (
+        sunrise.hour * 60 + sunrise.minute + sunrise.second / 60.0,
+        sunset.hour * 60 + sunset.minute + sunset.second / 60.0,
+    )
+
+
+def _dst_offset_minutes(now: datetime, tz: ZoneInfo) -> int:
+    base_offset = datetime(now.year, 1, 15, 12, tzinfo=tz).utcoffset() or timedelta(0)
+    today_offset = datetime(now.year, now.month, now.day, 12, tzinfo=tz).utcoffset() or timedelta(0)
+    return int((today_offset - base_offset).total_seconds() // 60)
+
+
+def _normalize_signed_delta(value: float, center: float) -> float:
+    delta = value - center
+    if delta > 720:
+        delta -= 1440
+    elif delta < -720:
+        delta += 1440
+    return delta
+
+
+def _smoothstep(value: float) -> float:
+    t = max(0.0, min(1.0, value))
+    return t * t * (3 - 2 * t)
+
+
+def _mix(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _unscale_time(actual_t: float, base_sunrise: float, base_sunset: float, sunrise: float, sunset: float) -> float:
+    if not all(isinstance(val, (int, float)) for val in (base_sunrise, base_sunset, sunrise, sunset)):
+        return actual_t
+
+    day_base = base_sunset - base_sunrise
+    day_actual = sunset - sunrise
+    night_base = 1440 - day_base
+    night_actual = 1440 - day_actual
+    base_noon = 720
+    actual_noon = 720
+    base_midnight = 0
+    actual_midnight = 0
+    transition = 60
+    warp_strength = 1
+
+    t = actual_t % 1440
+
+    def day_map() -> float:
+        if day_actual <= 0 or day_base <= 0:
+            return t
+        delta = t - actual_noon
+        return base_noon + (delta * day_base) / day_actual
+
+    def night_map() -> float:
+        if night_actual <= 0 or night_base <= 0:
+            return t
+        night_delta = _normalize_signed_delta(t, actual_midnight)
+        return (base_midnight + (night_delta * night_base) / night_actual + 1440) % 1440
+
+    sunrise_blend = sunrise - transition <= t <= sunrise + transition
+    sunset_blend = sunset - transition <= t <= sunset + transition
+
+    if sunrise_blend:
+        alpha = _smoothstep((t - (sunrise - transition)) / (2 * transition))
+        return _mix(night_map(), day_map(), alpha)
+    if sunset_blend:
+        alpha = _smoothstep((t - (sunset - transition)) / (2 * transition))
+        return _mix(day_map(), night_map(), alpha)
+
+    mapped = day_map() if sunrise <= t < sunset else night_map()
+    return _mix(t, mapped, warp_strength)
+
+
+def _evaluate_solar_curve(
+    points: list[dict],
+    t_minutes: float,
+    base_sunrise: float,
+    base_sunset: float,
+    sunrise: float,
+    sunset: float,
+    dst_offset: int,
+) -> float | None:
+    if not all(isinstance(val, (int, float)) for val in (base_sunrise, base_sunset, sunrise, sunset)):
+        return _evaluate_curve(points, t_minutes)
+    shifted = (t_minutes - dst_offset + 1440) % 1440
+    base_t = _unscale_time(shifted, base_sunrise, base_sunset, sunrise, sunset)
+    return _evaluate_curve(points, base_t)
+
+
+def _monotone_hermite(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    t: float,
+    span: float,
+) -> float:
+    d0 = (p2[1] - p0[1]) / (p2[0] - p0[0] or 1)
+    d1 = (p3[1] - p1[1]) / (p3[0] - p1[0] or 1)
+    m1 = d0
+    m2 = d1
+    delta = (p2[1] - p1[1]) / (p2[0] - p1[0] or 1)
+
+    if abs(delta) < 1e-6:
+        m1 = 0.0
+        m2 = 0.0
+    else:
+        if m1 / delta < 0:
+            m1 = 0.0
+        if m2 / delta < 0:
+            m2 = 0.0
+        limit = 3.0 * abs(delta)
+        if abs(m1) > limit:
+            m1 = math.copysign(limit, m1)
+        if abs(m2) > limit:
+            m2 = math.copysign(limit, m2)
+
+    t2 = t * t
+    t3 = t2 * t
+    h00 = 2 * t3 - 3 * t2 + 1
+    h10 = t3 - 2 * t2 + t
+    h01 = -2 * t3 + 3 * t2
+    h11 = t3 - t2
+    return h00 * p1[1] + h10 * m1 * span + h01 * p2[1] + h11 * m2 * span
+
+
+def _prepare_curve(points: list[dict]) -> list[tuple[float, float]]:
+    cleaned = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        t = point.get("t")
+        v = point.get("v")
+        if not isinstance(t, (int, float)) or not isinstance(v, (int, float)):
+            continue
+        cleaned.append((max(0.0, min(1440.0, float(t))), float(v)))
+
+    cleaned.sort(key=lambda item: item[0])
+    return cleaned
+
+
+def _evaluate_curve(points: list[dict], t_minutes: float) -> float | None:
+    curve = _prepare_curve(points)
+    if len(curve) < 2:
+        return None
+
+    t = t_minutes % 1440.0
+    extended = [(t_val - 1440.0, v) for t_val, v in curve] + curve + [(t_val + 1440.0, v) for t_val, v in curve]
+    start = len(curve)
+    end = len(curve) * 2
+
+    idx = start
+    while idx < end - 1 and t > extended[idx + 1][0]:
+        idx += 1
+
+    p0 = extended[max(idx - 1, 0)]
+    p1 = extended[idx]
+    p2 = extended[idx + 1]
+    p3 = extended[min(idx + 2, len(extended) - 1)]
+
+    span = p2[0] - p1[0]
+    if span <= 0:
+        return p1[1]
+
+    local_t = (t - p1[0]) / span
+    return _monotone_hermite(p0, p1, p2, p3, local_t, span)
 def _state_from_inputs(states: dict) -> tuple[str, int | None]:
     on_brightness = []
     for value in states.values():
@@ -170,6 +813,7 @@ def _median_color_from_inputs(states: dict) -> dict:
 
     color_group = {"hs", "rgb", "rgbw", "rgbww", "xy"}
     has_color_input = False
+    has_color_temp_mode = False
 
     for value in states.values():
         if not isinstance(value, dict):
@@ -179,6 +823,8 @@ def _median_color_from_inputs(states: dict) -> dict:
         mode = value.get("color_mode")
         if isinstance(mode, str) and mode in color_group:
             has_color_input = True
+        if isinstance(mode, str) and mode == "color_temp":
+            has_color_temp_mode = True
 
     for value in states.values():
         if not isinstance(value, dict):
@@ -282,6 +928,9 @@ def _median_color_from_inputs(states: dict) -> dict:
     if ct_kelvin:
         payload["color_temp_kelvin"] = int(statistics.median(ct_kelvin))
 
+    if has_color_temp_mode and ("color_temp" in payload or "color_temp_kelvin" in payload):
+        payload["__prefer_color_temp"] = True
+
     return payload
 
 def _targets_all(states: dict) -> list[str]:
@@ -358,6 +1007,10 @@ def _publish_input_command(
 
 
 def _select_color_mode(modes: list[str], color_payload: dict) -> str | None:
+    if color_payload.get("__prefer_color_temp") and (
+        "color_temp" in color_payload or "color_temp_kelvin" in color_payload
+    ):
+        return "color_temp"
     has_color = any(key in color_payload for key in ("rgb_color", "rgbw_color", "rgbww_color", "hs_color", "xy_color"))
     if has_color:
         if "rgbww" in modes and "rgbww_color" in color_payload:
@@ -403,6 +1056,7 @@ def _publish_output_state(
         payload["effect_list"] = effect_list
     if effect is not None:
         payload["effect"] = effect
+    color_payload.pop("__prefer_color_temp", None)
     payload.update(color_payload)
 
     if "rgb_color" in payload and isinstance(payload["rgb_color"], list) and len(payload["rgb_color"]) == 3:
@@ -462,10 +1116,469 @@ def main() -> None:
     port = int(options.get("mqtt_port", 1883))
     username = options.get("mqtt_username") or None
     password = options.get("mqtt_password") or None
+    circadian_interval = max(1, int(options.get("circadian_interval", 60)))
 
     last_output: dict[str, dict] = {}
     last_inputs: dict[str, dict] = {}
+    last_circadian: dict[str, dict] = {}
+    last_circadian_settings: dict[str, dict] = {}
+    last_circadian_state: dict[str, dict] = {}
+    last_limits_state: dict[str, dict] = {}
+    last_mode_state: dict[str, dict] = {}
+    last_smoothed: dict[str, dict] = {}
+    last_smooth_time: dict[str, float] = {}
+    config_cache = {"mtime": None, "controllers": [], "master": {}}
+    sun_cache = {"fetched": 0.0, "attrs": None}
+    ha_config_cache = {"fetched": 0.0, "config": None}
+    weather_cache = {"fetched": 0.0, "values": {}}
 
+
+    def _load_controller_cache() -> tuple[list[dict], dict]:
+        try:
+            mtime = os.path.getmtime(CONFIG_PATH)
+        except FileNotFoundError:
+            mtime = None
+
+        if mtime != config_cache.get("mtime"):
+            config_cache["mtime"] = mtime
+            payload = _load_controllers_config()
+            config_cache["controllers"] = payload.get("controllers", [])
+            config_cache["master"] = payload.get("master", {})
+
+        return config_cache.get("controllers", []), config_cache.get("master", {})
+
+    def _get_sun_attrs() -> dict | None:
+        now_ts = time.time()
+        if now_ts - sun_cache.get("fetched", 0.0) > 300:
+            sun_cache["attrs"] = _fetch_sun_times()
+            sun_cache["fetched"] = now_ts
+        return sun_cache.get("attrs")
+
+    def _get_time_zone() -> ZoneInfo:
+        now_ts = time.time()
+        if now_ts - ha_config_cache.get("fetched", 0.0) > 300:
+            ha_config_cache["config"] = _fetch_ha_config()
+            ha_config_cache["fetched"] = now_ts
+        config = ha_config_cache.get("config") or {}
+        tz_name = config.get("time_zone") or "UTC"
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            return ZoneInfo("UTC")
+
+    def _get_weather_values(config: dict) -> dict:
+        now_ts = time.time()
+        if now_ts - weather_cache.get("fetched", 0.0) < 60 and weather_cache.get("values"):
+            return weather_cache.get("values", {})
+
+        values: dict = {}
+        cloud_state = _fetch_entity_state(config.get("cloud_sensor"))
+        uv_state = _fetch_entity_state(config.get("uv_sensor"))
+        visibility_state = _fetch_entity_state(config.get("visibility_sensor"))
+        code_state = _fetch_entity_state(config.get("weather_code_sensor"))
+
+        values["cloud_coverage"] = _parse_float(cloud_state.get("state")) if cloud_state else None
+        values["uv_index"] = _parse_float(uv_state.get("state")) if uv_state else None
+        values["visibility_km"] = _parse_visibility_km(visibility_state)
+        values["weather_code"] = _parse_float(code_state.get("state")) if code_state else None
+
+        weather_cache["fetched"] = now_ts
+        weather_cache["values"] = values
+        return values
+
+    def _get_curve_range(points: list[dict]) -> tuple[float | None, float | None]:
+        values = [float(point.get("v")) for point in points if isinstance(point, dict) and isinstance(point.get("v"), (int, float))]
+        if not values:
+            return None, None
+        return min(values), max(values)
+
+    def _scale_brightness(brightness: int | None, limits: dict) -> int | None:
+        if brightness is None:
+            return None
+        min_pct = max(1, min(100, int(limits.get("brightness_min_pct", 1))))
+        max_pct = max(1, min(100, int(limits.get("brightness_max_pct", 100))))
+        if min_pct > max_pct:
+            min_pct, max_pct = max_pct, min_pct
+        pct = (brightness / 255.0) * 100.0
+        scaled_pct = min_pct + (pct / 100.0) * (max_pct - min_pct)
+        return int(round((scaled_pct / 100.0) * 255.0))
+
+    def _scale_color_temp(color_temp: int | None, points: list[dict], limits: dict) -> int | None:
+        if color_temp is None:
+            return None
+        min_k = int(limits.get("ct_min_kelvin", 2000))
+        max_k = int(limits.get("ct_max_kelvin", 6500))
+        if min_k > max_k:
+            min_k, max_k = max_k, min_k
+        curve_min, curve_max = _get_curve_range(points)
+        if curve_min is None or curve_max is None or curve_min == curve_max:
+            return int(max(min_k, min(max_k, color_temp)))
+        ratio = (color_temp - curve_min) / (curve_max - curve_min)
+        ratio = max(0.0, min(1.0, ratio))
+        scaled = min_k + ratio * (max_k - min_k)
+        return int(round(scaled))
+
+    def _rate_limit(prev: int | None, target: int | None, max_delta: float) -> int | None:
+        if target is None:
+            return None
+        if prev is None:
+            return int(round(target))
+        if max_delta <= 0:
+            return int(round(prev))
+        delta = target - prev
+        if abs(delta) <= max_delta:
+            return int(round(target))
+        step = max_delta if delta > 0 else -max_delta
+        return int(round(prev + step))
+
+    def _smooth_targets(
+        controller_id: str,
+        target_brightness: int | None,
+        target_ct: int | None,
+        smoothing: dict,
+        apply_brightness: bool,
+        apply_ct: bool,
+    ) -> tuple[int | None, int | None]:
+        now_ts = time.time()
+        last_time = last_smooth_time.get(controller_id, now_ts)
+        elapsed = max(0.0, now_ts - last_time)
+        brightness_rate = smoothing.get("brightness_rate_pct", 1.6)
+        ct_rate = smoothing.get("ct_rate_k", 40.0)
+        max_brightness_delta = 255.0 * (brightness_rate / 100.0) * elapsed
+        max_ct_delta = ct_rate * elapsed
+
+        prev = last_smoothed.get(controller_id, {})
+        if apply_brightness:
+            smooth_brightness = (
+                target_brightness
+                if brightness_rate <= 0
+                else _rate_limit(prev.get("brightness"), target_brightness, max_brightness_delta)
+            )
+        else:
+            smooth_brightness = target_brightness
+        if apply_ct:
+            smooth_ct = (
+                target_ct
+                if ct_rate <= 0
+                else _rate_limit(prev.get("color_temp"), target_ct, max_ct_delta)
+            )
+        else:
+            smooth_ct = target_ct
+
+        last_smoothed[controller_id] = {"brightness": smooth_brightness, "color_temp": smooth_ct}
+        last_smooth_time[controller_id] = now_ts
+        return smooth_brightness, smooth_ct
+
+    def _compute_targets(
+        controller_id: str,
+        controller_cfg: dict,
+        master: dict,
+        states: dict | None = None,
+        output_state_override: str | None = None,
+        force_reset: bool = False,
+    ) -> tuple[
+        int | None,
+        int | None,
+        int | None,
+        int | None,
+        int | None,
+        int | None,
+        float | None,
+        bool,
+        bool,
+        bool,
+        str,
+    ]:
+        circadian = controller_cfg.get("circadian") or {}
+        brightness_enabled = circadian.get("brightness_enabled", True)
+        color_temp_enabled = circadian.get("color_temp_enabled", True)
+        circadian_enabled = bool(circadian.get("enabled"))
+        raw_brightness, raw_ct = _get_circadian_values(controller_cfg, master)
+
+        output_state = output_state_override
+        if output_state is None:
+            use_states = states if states is not None else last_inputs.get(controller_id, {})
+            output_state, _ = _state_from_inputs(use_states) if use_states else ("off", None)
+
+        smoothing_cfg = _normalize_smoothing_config(master if isinstance(master, dict) else {})
+        apply_smoothing = circadian_enabled and output_state == "on" and not force_reset
+
+        weather_reduction_pct = None
+        weather_brightness = raw_brightness
+        weather_ct = raw_ct
+        weather_cfg = _normalize_weather_config(master if isinstance(master, dict) else {})
+        legacy_weather_enabled = False
+        if isinstance(master, dict):
+            legacy_weather = master.get("weather")
+            if isinstance(legacy_weather, dict):
+                legacy_weather_enabled = bool(legacy_weather.get("enabled", False))
+        weather_enabled = controller_cfg.get("weather_enabled")
+        if not isinstance(weather_enabled, bool):
+            weather_enabled = legacy_weather_enabled
+        if weather_enabled and raw_ct is not None:
+            weather_values = _get_weather_values(weather_cfg)
+            clarity, precip = _compute_clarity(weather_values, weather_cfg)
+            weather_payload = {
+                "clarity": clarity,
+                "precip": precip,
+                "max_reduction_pct": weather_cfg.get("max_reduction_pct", 0.0),
+            }
+            limits = _normalize_limits(controller_cfg.get("limits"))
+            weather_ct, weather_reduction_pct = _apply_weather_ct_with_reduction(raw_ct, limits, weather_payload)
+            if weather_reduction_pct is not None:
+                weather_reduction_pct = float(weather_reduction_pct)
+
+        if apply_smoothing:
+            smooth_brightness, smooth_ct = _smooth_targets(
+                controller_id,
+                weather_brightness,
+                weather_ct,
+                smoothing_cfg,
+                brightness_enabled,
+                color_temp_enabled,
+            )
+        else:
+            smooth_brightness, smooth_ct = raw_brightness, raw_ct
+            last_smoothed.pop(controller_id, None)
+            last_smooth_time.pop(controller_id, None)
+
+        return (
+            raw_brightness,
+            raw_ct,
+            weather_brightness,
+            weather_ct,
+            smooth_brightness,
+            smooth_ct,
+            weather_reduction_pct,
+            brightness_enabled,
+            color_temp_enabled,
+            circadian_enabled,
+            output_state,
+        )
+
+    def _publish_circadian_targets(
+        controller_id: str,
+        controller_cfg: dict,
+        master: dict,
+        states: dict | None = None,
+        output_state_override: str | None = None,
+        force_reset: bool = False,
+    ) -> tuple[int | None, int | None, bool, str, bool, bool]:
+        (
+            raw_brightness,
+            raw_ct,
+            weather_brightness,
+            weather_ct,
+            smooth_brightness,
+            smooth_ct,
+            weather_reduction_pct,
+            brightness_enabled,
+            color_temp_enabled,
+            circadian_enabled,
+            output_state,
+        ) = _compute_targets(
+            controller_id,
+            controller_cfg,
+            master,
+            states=states,
+            output_state_override=output_state_override,
+            force_reset=force_reset,
+        )
+
+        state_payload = {
+            "brightness_enabled": bool(brightness_enabled),
+            "color_temp_enabled": bool(color_temp_enabled),
+            "brightness_target_raw": raw_brightness,
+            "color_temp_target_raw": raw_ct,
+            "brightness_target_weather": weather_brightness,
+            "color_temp_target_weather": weather_ct,
+            "brightness_target": smooth_brightness,
+            "color_temp_target": smooth_ct,
+            "weather_reduction_pct": weather_reduction_pct,
+        }
+        if last_circadian_state.get(controller_id) != state_payload:
+            last_circadian_state[controller_id] = state_payload
+            state_topic = TOPIC_CIRCADIAN_STATE.format(controller_id)
+            client.publish(state_topic, json.dumps(state_payload), qos=0, retain=True)
+
+        return smooth_brightness, smooth_ct, circadian_enabled, output_state, brightness_enabled, color_temp_enabled
+
+    def _get_circadian_values(controller: dict, master: dict) -> tuple[int | None, int | None]:
+        circadian = controller.get("circadian") or {}
+        if not isinstance(circadian, dict) or not circadian.get("enabled"):
+            return None, None
+
+        brightness_enabled = circadian.get("brightness_enabled", True)
+        color_temp_enabled = circadian.get("color_temp_enabled", True)
+
+        brightness_points = circadian.get("brightness_curve", [])
+        if circadian.get("use_master_brightness") and isinstance(master, dict):
+            brightness_points = master.get("brightness_curve", brightness_points)
+        color_temp_points = circadian.get("color_temp_curve", [])
+        if circadian.get("use_master_color_temp") and isinstance(master, dict):
+            color_temp_points = master.get("color_temp_curve", color_temp_points)
+
+        now = datetime.now(_get_time_zone())
+        t_minutes = now.hour * 60 + now.minute + (now.second / 60.0)
+
+        sun_attrs = _get_sun_attrs()
+        sunrise, sunset = _today_sun_times(now, sun_attrs)
+        base_sunrise = circadian.get("base_sunrise")
+        base_sunset = circadian.get("base_sunset")
+        if not isinstance(base_sunrise, (int, float)):
+            base_sunrise = sunrise
+        if not isinstance(base_sunset, (int, float)):
+            base_sunset = sunset
+        dst_offset = _dst_offset_minutes(now, _get_time_zone())
+
+        use_master_brightness = circadian.get("use_master_brightness") and isinstance(master, dict)
+        use_master_color = circadian.get("use_master_color_temp") and isinstance(master, dict)
+        solar_brightness = (
+            master.get("solar_shift_brightness", True)
+            if use_master_brightness and isinstance(master, dict)
+            else circadian.get("solar_shift_brightness", True)
+        )
+        solar_color = (
+            master.get("solar_shift_color_temp", True)
+            if use_master_color and isinstance(master, dict)
+            else circadian.get("solar_shift_color_temp", True)
+        )
+
+        if brightness_enabled:
+            brightness_val = (
+                _evaluate_solar_curve(
+                    brightness_points,
+                    t_minutes,
+                    base_sunrise,
+                    base_sunset,
+                    sunrise,
+                    sunset,
+                    dst_offset if solar_brightness else 0,
+                )
+                if solar_brightness
+                else _evaluate_curve(brightness_points, t_minutes)
+            )
+        else:
+            brightness_val = None
+
+        if color_temp_enabled:
+            color_temp_val = (
+                _evaluate_solar_curve(
+                    color_temp_points,
+                    t_minutes,
+                    base_sunrise,
+                    base_sunset,
+                    sunrise,
+                    sunset,
+                    dst_offset if solar_color else 0,
+                )
+                if solar_color
+                else _evaluate_curve(color_temp_points, t_minutes)
+            )
+        else:
+            color_temp_val = None
+
+        brightness = int(max(0, min(255, round(brightness_val)))) if brightness_val is not None else None
+        color_temp = int(max(1500, min(8000, round(color_temp_val)))) if color_temp_val is not None else None
+
+        limits = _normalize_limits(controller.get("limits"))
+        brightness = _scale_brightness(brightness, limits)
+        color_temp = _scale_color_temp(color_temp, color_temp_points, limits)
+        return brightness, color_temp
+
+    def _circadian_tick():
+        controllers, master = _load_controller_cache()
+        if not controllers:
+            return
+
+        for controller in controllers:
+            if not isinstance(controller, dict):
+                continue
+            circadian = controller.get("circadian") or {}
+            if not isinstance(circadian, dict):
+                circadian = {}
+
+            unique_id = controller.get("unique_id") or controller.get("name")
+            if not isinstance(unique_id, str) or not unique_id:
+                continue
+
+            controller_id = _normalize_controller_id(unique_id)
+            limits_state = _normalize_limits(controller.get("limits"))
+            if last_limits_state.get(controller_id) != limits_state:
+                last_limits_state[controller_id] = limits_state
+                limits_topic = TOPIC_LIMITS_STATE.format(controller_id)
+                client.publish(limits_topic, json.dumps(limits_state), qos=0, retain=True)
+            mode_value = _normalize_mode(last_mode_state.get(controller_id, {}).get("mode") or controller.get("mode"))
+            settings = last_circadian_settings.get(controller_id, {})
+            brightness_enabled = settings.get("brightness_enabled", circadian.get("brightness_enabled", True))
+            color_temp_enabled = settings.get("color_temp_enabled", circadian.get("color_temp_enabled", True))
+            if mode_value == "Manual":
+                brightness_enabled = False
+                color_temp_enabled = False
+            mode_value = _sync_mode_with_switches(
+                controller_id,
+                controller,
+                bool(brightness_enabled),
+                bool(color_temp_enabled),
+                current_mode=last_mode_state.get(controller_id, {}).get("mode"),
+            )
+            mode_payload = {"mode": mode_value}
+            if last_mode_state.get(controller_id) != mode_payload:
+                last_mode_state[controller_id] = mode_payload
+                _publish_mode_state(client, controller_id, mode_value)
+            _set_circadian_flags(
+                client,
+                controller_id,
+                last_circadian_settings,
+                brightness_enabled=brightness_enabled,
+                color_temp_enabled=color_temp_enabled,
+                persist=mode_value == "Manual",
+            )
+            states = last_inputs.get(controller_id, {})
+            smooth_brightness, smooth_ct, circadian_enabled, output_state, brightness_enabled, color_temp_enabled = _publish_circadian_targets(
+                controller_id,
+                controller,
+                master,
+                states=states,
+            )
+            if not circadian_enabled:
+                continue
+            if not states:
+                continue
+            if output_state != "on":
+                continue
+
+            brightness = smooth_brightness if brightness_enabled else None
+            color_temp = smooth_ct if color_temp_enabled else None
+
+            if brightness is None and color_temp is None:
+                continue
+
+            last = last_circadian.get(controller_id, {})
+            if last.get("brightness") == brightness and last.get("color_temp") == color_temp:
+                continue
+
+            targets_on = _targets_on(states)
+            if brightness is not None and targets_on:
+                _publish_input_command(
+                    client,
+                    controller_id,
+                    "set_brightness_inputs",
+                    targets_on,
+                    brightness,
+                )
+
+            if color_temp is not None:
+                color_targets = _targets_with_mode(states, "color_temp", only_on=True)
+                _publish_input_command(
+                    client,
+                    controller_id,
+                    "set_color_inputs",
+                    color_targets,
+                    color_payload={"color_temp_kelvin": color_temp, "color_mode": "color_temp"},
+                )
+
+            last_circadian[controller_id] = {"brightness": brightness, "color_temp": color_temp}
     def on_connect(client, userdata, flags, rc):
         if rc != 0:
             logger.error("MQTT connect failed with code %s", rc)
@@ -473,6 +1586,9 @@ def main() -> None:
         logger.info("Connected to MQTT at %s:%s", host, port)
         client.subscribe(TOPIC_INPUTS)
         client.subscribe(TOPIC_EVENTS)
+        client.subscribe(TOPIC_CIRCADIAN_SET)
+        client.subscribe(TOPIC_LIMITS_SET)
+        client.subscribe(TOPIC_MODE_SET)
 
     def on_message(client, userdata, msg):
         topic = msg.topic
@@ -482,6 +1598,141 @@ def main() -> None:
 
         controller_id = parts[1]
         suffix = parts[2]
+
+        if suffix == "circadian" and len(parts) > 3 and parts[3] == "set":
+            payload = _parse_payload(msg.payload)
+            if not isinstance(payload, dict):
+                return
+
+            brightness_enabled = payload.get("brightness_enabled")
+            color_temp_enabled = payload.get("color_temp_enabled")
+            if brightness_enabled is None and color_temp_enabled is None:
+                return
+
+            _set_circadian_flags(
+                client,
+                controller_id,
+                last_circadian_settings,
+                brightness_enabled=brightness_enabled,
+                color_temp_enabled=color_temp_enabled,
+                persist=True,
+            )
+            controllers, master = _load_controller_cache()
+            controller_cfg = next(
+                (
+                    controller
+                    for controller in controllers
+                    if isinstance(controller, dict)
+                    and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                    == controller_id
+                ),
+                None,
+            )
+            if controller_cfg:
+                effective = last_circadian_settings.get(controller_id, {})
+                effective_brightness = effective.get(
+                    "brightness_enabled",
+                    bool(brightness_enabled) if brightness_enabled is not None else bool(controller_cfg.get("circadian", {}).get("brightness_enabled", True)),
+                )
+                effective_color = effective.get(
+                    "color_temp_enabled",
+                    bool(color_temp_enabled) if color_temp_enabled is not None else bool(controller_cfg.get("circadian", {}).get("color_temp_enabled", True)),
+                )
+                mode_value = _sync_mode_with_switches(
+                    controller_id,
+                    controller_cfg,
+                    bool(effective_brightness),
+                    bool(effective_color),
+                    current_mode=last_mode_state.get(controller_id, {}).get("mode"),
+                )
+                mode_payload = {"mode": mode_value}
+                if last_mode_state.get(controller_id) != mode_payload:
+                    last_mode_state[controller_id] = mode_payload
+                    _publish_mode_state(client, controller_id, mode_value)
+                _publish_circadian_targets(controller_id, controller_cfg, master)
+            return
+
+        if suffix == "limits" and len(parts) > 3 and parts[3] == "set":
+            payload = _parse_payload(msg.payload)
+            if not isinstance(payload, dict):
+                return
+
+            updated = _update_limits(controller_id, payload)
+            if updated or controller_id not in last_limits_state:
+                controllers, master = _load_controller_cache()
+                controller_cfg = next(
+                    (
+                        controller
+                        for controller in controllers
+                        if isinstance(controller, dict)
+                        and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                        == controller_id
+                    ),
+                    None,
+                )
+                limits_state = _normalize_limits(controller_cfg.get("limits") if controller_cfg else None)
+                last_limits_state[controller_id] = limits_state
+                limits_topic = TOPIC_LIMITS_STATE.format(controller_id)
+                client.publish(limits_topic, json.dumps(limits_state), qos=0, retain=True)
+                if controller_cfg:
+                    _publish_circadian_targets(controller_id, controller_cfg, master)
+            return
+
+        if suffix == "mode" and len(parts) > 3 and parts[3] == "set":
+            payload = _parse_payload(msg.payload)
+            if isinstance(payload, dict):
+                mode_value = payload.get("mode")
+            else:
+                mode_value = payload
+            normalized = _normalize_mode(mode_value)
+            updated = _update_mode(controller_id, normalized)
+            if normalized == "Manual":
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    brightness_enabled=False,
+                    color_temp_enabled=False,
+                    persist=True,
+                )
+            elif normalized == "Circadian":
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    brightness_enabled=True,
+                    color_temp_enabled=True,
+                    persist=True,
+                )
+            controllers, master = _load_controller_cache()
+            controller_cfg = next(
+                (
+                    controller
+                    for controller in controllers
+                    if isinstance(controller, dict)
+                    and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                    == controller_id
+                ),
+                None,
+            )
+            circadian_cfg = controller_cfg.get("circadian") if isinstance(controller_cfg, dict) else {}
+            settings = last_circadian_settings.get(controller_id, {})
+            brightness_enabled = settings.get("brightness_enabled", bool(circadian_cfg.get("brightness_enabled", True)))
+            color_temp_enabled = settings.get("color_temp_enabled", bool(circadian_cfg.get("color_temp_enabled", True)))
+            mode_value = _sync_mode_with_switches(
+                controller_id,
+                controller_cfg,
+                brightness_enabled,
+                color_temp_enabled,
+                current_mode=normalized,
+            )
+            mode_payload = {"mode": mode_value}
+            if updated or last_mode_state.get(controller_id) != mode_payload:
+                last_mode_state[controller_id] = mode_payload
+                _publish_mode_state(client, controller_id, mode_value)
+            if controller_cfg:
+                _publish_circadian_targets(controller_id, controller_cfg, master)
+            return
 
         if suffix == "event":
             payload = _parse_payload(msg.payload)
@@ -499,10 +1750,93 @@ def main() -> None:
 
             states = last_inputs.get(controller_id, {})
             if event == "manual_off":
+                controllers, master = _load_controller_cache()
+                controller_cfg = next(
+                    (
+                        controller
+                        for controller in controllers
+                        if isinstance(controller, dict)
+                        and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                        == controller_id
+                    ),
+                    None,
+                )
+                mode_value = _normalize_mode(controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
+                if mode_value == "Manual":
+                    _set_circadian_flags(
+                        client,
+                        controller_id,
+                        last_circadian_settings,
+                        brightness_enabled=False,
+                        color_temp_enabled=False,
+                        persist=True,
+                    )
                 _publish_input_command(client, controller_id, "turn_off_inputs", _targets_on(states))
+                if controller_cfg:
+                    _publish_circadian_targets(
+                        controller_id,
+                        controller_cfg,
+                        master,
+                        states=states,
+                        output_state_override="off",
+                        force_reset=True,
+                    )
             elif event == "manual_on":
                 targets = _targets_all(states)
                 _publish_input_command(client, controller_id, "turn_on_inputs", targets)
+                controllers, master = _load_controller_cache()
+                controller_cfg = next(
+                    (
+                        controller
+                        for controller in controllers
+                        if isinstance(controller, dict)
+                        and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                        == controller_id
+                    ),
+                    None,
+                )
+                mode_value = _normalize_mode(controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
+                if mode_value not in ("Night", "Away"):
+                    _update_mode(controller_id, "Circadian")
+                    _set_circadian_flags(
+                        client,
+                        controller_id,
+                        last_circadian_settings,
+                        brightness_enabled=True,
+                        color_temp_enabled=True,
+                        persist=True,
+                    )
+                    mode_payload = {"mode": "Circadian"}
+                    if last_mode_state.get(controller_id) != mode_payload:
+                        last_mode_state[controller_id] = mode_payload
+                        _publish_mode_state(client, controller_id, "Circadian")
+                if brightness is None and not color_payload:
+                    if controller_cfg:
+                        smooth_brightness, smooth_ct, _, _, _, _ = _publish_circadian_targets(
+                            controller_id,
+                            controller_cfg,
+                            master,
+                            states=states,
+                            output_state_override="on",
+                            force_reset=True,
+                        )
+                        if isinstance(smooth_brightness, int):
+                            _publish_input_command(
+                                client,
+                                controller_id,
+                                "set_brightness_inputs",
+                                targets,
+                                smooth_brightness,
+                            )
+                        if isinstance(smooth_ct, int):
+                            color_targets = _targets_with_mode(states, "color_temp", only_on=False)
+                            _publish_input_command(
+                                client,
+                                controller_id,
+                                "set_color_inputs",
+                                color_targets,
+                                color_payload={"color_temp_kelvin": smooth_ct, "color_mode": "color_temp"},
+                            )
                 if isinstance(brightness, int):
                     _publish_input_command(
                         client,
@@ -529,6 +1863,13 @@ def main() -> None:
                         effect=effect,
                     )
             elif event == "manual_brightness" and isinstance(brightness, int):
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    brightness_enabled=False,
+                    persist=True,
+                )
                 _publish_input_command(
                     client,
                     controller_id,
@@ -536,7 +1877,32 @@ def main() -> None:
                     _targets_on(states),
                     brightness,
                 )
+                controllers, master = _load_controller_cache()
+                controller_cfg = next(
+                    (
+                        controller
+                        for controller in controllers
+                        if isinstance(controller, dict)
+                        and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                        == controller_id
+                    ),
+                    None,
+                )
+                if controller_cfg:
+                    _publish_circadian_targets(controller_id, controller_cfg, master, states=states)
             elif event == "manual_color" and color_payload:
+                if (
+                    "color_temp" in color_payload
+                    or "color_temp_kelvin" in color_payload
+                    or color_mode == "color_temp"
+                ):
+                    _set_circadian_flags(
+                        client,
+                        controller_id,
+                        last_circadian_settings,
+                        color_temp_enabled=False,
+                        persist=True,
+                    )
                 color_targets = _targets_with_mode(states, color_mode, only_on=True)
                 _publish_input_command(
                     client,
@@ -545,6 +1911,19 @@ def main() -> None:
                     color_targets,
                     color_payload=color_payload,
                 )
+                controllers, master = _load_controller_cache()
+                controller_cfg = next(
+                    (
+                        controller
+                        for controller in controllers
+                        if isinstance(controller, dict)
+                        and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                        == controller_id
+                    ),
+                    None,
+                )
+                if controller_cfg:
+                    _publish_circadian_targets(controller_id, controller_cfg, master, states=states)
             elif event == "manual_effect" and isinstance(effect, str) and effect:
                 _publish_input_command(
                     client,
@@ -563,6 +1942,51 @@ def main() -> None:
         last_inputs[controller_id] = states
 
         output_state, output_brightness = _state_from_inputs(states)
+        if output_state != "on":
+            controllers, _ = _load_controller_cache()
+            controller_cfg = next(
+                (
+                    controller
+                    for controller in controllers
+                    if isinstance(controller, dict)
+                    and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                    == controller_id
+                ),
+                None,
+            )
+            mode_value = _normalize_mode(
+                last_mode_state.get(controller_id, {}).get("mode")
+                or (controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
+            )
+            if mode_value == "Circadian":
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    brightness_enabled=True,
+                    color_temp_enabled=True,
+                    persist=True,
+                )
+        controllers, master = _load_controller_cache()
+        controller_cfg = next(
+            (
+                controller
+                for controller in controllers
+                if isinstance(controller, dict)
+                and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
+                == controller_id
+            ),
+            None,
+        )
+        if controller_cfg:
+            _publish_circadian_targets(
+                controller_id,
+                controller_cfg,
+                master,
+                states=states,
+                output_state_override=output_state,
+                force_reset=output_state != "on",
+            )
         modes = _union_color_modes(states)
         min_mireds, max_mireds = _union_mireds(states)
         color_payload = _median_color_from_inputs(states)
@@ -624,7 +2048,15 @@ def main() -> None:
     while True:
         try:
             client.connect(host, port, 60)
-            client.loop_forever()
+            client.loop_start()
+            while True:
+                if not client.is_connected():
+                    break
+                _circadian_tick()
+                runtime = _read_runtime_payload()
+                circadian_interval = runtime.get("circadian_interval", circadian_interval)
+                time.sleep(circadian_interval)
+            client.loop_stop()
         except Exception as exc:  # noqa: BLE001
             logger.error("MQTT error: %s", exc)
             time.sleep(5)
@@ -632,3 +2064,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
