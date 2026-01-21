@@ -47,6 +47,20 @@ const weatherVisibilityMaxInput = document.getElementById("weather-visibility-ma
 const weatherMaxReductionInput = document.getElementById("weather-max-reduction");
 const smoothBrightnessRateInput = document.getElementById("smooth-brightness-rate");
 const smoothCtRateInput = document.getElementById("smooth-ct-rate");
+const awayStartInput = document.getElementById("away-start");
+const awayEndInput = document.getElementById("away-end");
+const awayMinMinutesInput = document.getElementById("away-min-minutes");
+const awayMaxMinutesInput = document.getElementById("away-max-minutes");
+const awayOffsetMinutesInput = document.getElementById("away-offset-minutes");
+const sleepBrightnessInput = document.getElementById("sleep-brightness");
+const sleepCtInput = document.getElementById("sleep-ct");
+const sleepHueInput = document.getElementById("sleep-hue");
+const sleepSatInput = document.getElementById("sleep-sat");
+const sleepUseMasterToggle = document.getElementById("sleep-use-master");
+const sleepBrightnessOverrideInput = document.getElementById("sleep-brightness-override");
+const sleepCtOverrideInput = document.getElementById("sleep-ct-override");
+const sleepHueOverrideInput = document.getElementById("sleep-hue-override");
+const sleepSatOverrideInput = document.getElementById("sleep-sat-override");
 const solarBrightnessToggle = document.getElementById("solar-brightness");
 const solarColorToggle = document.getElementById("solar-color-temp");
 const brightnessMinInput = document.getElementById("brightness-min");
@@ -208,6 +222,33 @@ async function loadData() {
   if (smoothCtRateInput) {
     smoothCtRateInput.value = state.master.smoothing?.ct_rate_k ?? 2.67;
   }
+  if (awayStartInput) {
+    awayStartInput.value = formatMinutesToTime(state.master.away?.start_minutes, 360);
+  }
+  if (awayEndInput) {
+    awayEndInput.value = formatMinutesToTime(state.master.away?.end_minutes, 1350);
+  }
+  if (awayMinMinutesInput) {
+    awayMinMinutesInput.value = state.master.away?.min_minutes ?? 30;
+  }
+  if (awayMaxMinutesInput) {
+    awayMaxMinutesInput.value = state.master.away?.max_minutes ?? 180;
+  }
+  if (awayOffsetMinutesInput) {
+    awayOffsetMinutesInput.value = state.master.away?.offset_minutes ?? 30;
+  }
+  if (sleepBrightnessInput) {
+    sleepBrightnessInput.value = state.master.sleep?.brightness_pct ?? 10;
+  }
+  if (sleepCtInput) {
+    sleepCtInput.value = state.master.sleep?.color_temp_kelvin ?? 2200;
+  }
+  if (sleepHueInput) {
+    sleepHueInput.value = state.master.sleep?.hs_color?.[0] ?? 30;
+  }
+  if (sleepSatInput) {
+    sleepSatInput.value = state.master.sleep?.hs_color?.[1] ?? 70;
+  }
   updateMasterOverlays();
   renderControllers();
   if (!editor.classList.contains("hidden")) {
@@ -220,6 +261,32 @@ async function loadData() {
 function parseIntOr(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseFloatOr(value, fallback) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseTimeToMinutes(value, fallback) {
+  if (typeof value !== "string" || !value.includes(":")) {
+    return fallback;
+  }
+  const [hoursRaw, minutesRaw] = value.split(":");
+  const hours = Number.parseInt(hoursRaw, 10);
+  const minutes = Number.parseInt(minutesRaw, 10);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return fallback;
+  }
+  return clampValue(hours, 0, 23) * 60 + clampValue(minutes, 0, 59);
+}
+
+function formatMinutesToTime(value, fallback) {
+  const minutes = Number.isFinite(value) ? Number(value) : fallback;
+  const clamped = ((minutes % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(clamped / 60)).padStart(2, "0");
+  const mm = String(Math.floor(clamped % 60)).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 function roundTo2(value) {
@@ -882,7 +949,26 @@ function openEditor(index) {
       : legacyMasterEnabled;
     weatherEnabledToggle.checked = controllerEnabled;
   }
+  const sleepCfg = controller && typeof controller.sleep === "object" ? controller.sleep : {};
+  const sleepUseMaster = sleepUseMasterToggle ? sleepUseMasterToggle.checked : true;
+  if (sleepUseMasterToggle) {
+    sleepUseMasterToggle.checked = sleepCfg?.use_master !== false;
+  }
+  const sleepBase = sleepCfg?.use_master === false ? sleepCfg : state.master?.sleep || {};
+  if (sleepBrightnessOverrideInput) {
+    sleepBrightnessOverrideInput.value = sleepBase?.brightness_pct ?? state.master.sleep?.brightness_pct ?? 10;
+  }
+  if (sleepCtOverrideInput) {
+    sleepCtOverrideInput.value = sleepBase?.color_temp_kelvin ?? state.master.sleep?.color_temp_kelvin ?? 2200;
+  }
+  if (sleepHueOverrideInput) {
+    sleepHueOverrideInput.value = sleepBase?.hs_color?.[0] ?? state.master.sleep?.hs_color?.[0] ?? 30;
+  }
+  if (sleepSatOverrideInput) {
+    sleepSatOverrideInput.value = sleepBase?.hs_color?.[1] ?? state.master.sleep?.hs_color?.[1] ?? 70;
+  }
   toggleCircadianFields();
+  updateSleepOverrides();
   editorCustomBrightness = (circadian.brightness_curve || curveDefaults.brightness).map((point) => ({ ...point }));
   editorCustomColorTemp = (circadian.color_temp_curve || curveDefaults.color_temp).map((point) => ({ ...point }));
   editorBrightnessEnabled = circadian.brightness_enabled !== false;
@@ -934,6 +1020,21 @@ function closeEditor() {
   }
   if (weatherEnabledToggle) {
     weatherEnabledToggle.checked = false;
+  }
+  if (sleepUseMasterToggle) {
+    sleepUseMasterToggle.checked = true;
+  }
+  if (sleepBrightnessOverrideInput) {
+    sleepBrightnessOverrideInput.value = "";
+  }
+  if (sleepCtOverrideInput) {
+    sleepCtOverrideInput.value = "";
+  }
+  if (sleepHueOverrideInput) {
+    sleepHueOverrideInput.value = "";
+  }
+  if (sleepSatOverrideInput) {
+    sleepSatOverrideInput.value = "";
   }
   toggleCircadianFields();
   applyLimitInputs(limitDefaults);
@@ -1003,6 +1104,39 @@ function toggleCircadianFields() {
   circadianFields.classList.toggle("hidden", !circadianToggle.checked);
   if (circadianToggle.checked) {
     updateCurveOverlays();
+  }
+}
+
+function updateSleepOverrides() {
+  if (!sleepUseMasterToggle) {
+    return;
+  }
+  const useMaster = sleepUseMasterToggle.checked;
+  if (sleepBrightnessOverrideInput) {
+    sleepBrightnessOverrideInput.disabled = useMaster;
+  }
+  if (sleepCtOverrideInput) {
+    sleepCtOverrideInput.disabled = useMaster;
+  }
+  if (sleepHueOverrideInput) {
+    sleepHueOverrideInput.disabled = useMaster;
+  }
+  if (sleepSatOverrideInput) {
+    sleepSatOverrideInput.disabled = useMaster;
+  }
+  if (useMaster) {
+    if (sleepBrightnessOverrideInput) {
+      sleepBrightnessOverrideInput.value = state.master.sleep?.brightness_pct ?? 10;
+    }
+    if (sleepCtOverrideInput) {
+      sleepCtOverrideInput.value = state.master.sleep?.color_temp_kelvin ?? 2200;
+    }
+    if (sleepHueOverrideInput) {
+      sleepHueOverrideInput.value = state.master.sleep?.hs_color?.[0] ?? 30;
+    }
+    if (sleepSatOverrideInput) {
+      sleepSatOverrideInput.value = state.master.sleep?.hs_color?.[1] ?? 70;
+    }
   }
 }
 
@@ -1242,6 +1376,18 @@ function normalizeMaster(master) {
         brightness_rate_pct: 0.11,
         ct_rate_k: 2.67,
       },
+      away: {
+        start_minutes: 360,
+        end_minutes: 1350,
+        min_minutes: 30,
+        max_minutes: 180,
+        offset_minutes: 30,
+      },
+      sleep: {
+        brightness_pct: 10,
+        color_temp_kelvin: 2200,
+        hs_color: [30, 70],
+      },
     };
   }
   return {
@@ -1261,6 +1407,18 @@ function normalizeMaster(master) {
     smoothing: {
       brightness_rate_pct: Number.isFinite(master.smoothing?.brightness_rate_pct) ? master.smoothing.brightness_rate_pct : 0.11,
       ct_rate_k: Number.isFinite(master.smoothing?.ct_rate_k) ? master.smoothing.ct_rate_k : 2.67,
+    },
+    away: {
+      start_minutes: Number.isFinite(master.away?.start_minutes) ? master.away.start_minutes : 360,
+      end_minutes: Number.isFinite(master.away?.end_minutes) ? master.away.end_minutes : 1350,
+      min_minutes: Number.isFinite(master.away?.min_minutes) ? master.away.min_minutes : 30,
+      max_minutes: Number.isFinite(master.away?.max_minutes) ? master.away.max_minutes : 180,
+      offset_minutes: Number.isFinite(master.away?.offset_minutes) ? master.away.offset_minutes : 30,
+    },
+    sleep: {
+      brightness_pct: Number.isFinite(master.sleep?.brightness_pct) ? master.sleep.brightness_pct : 10,
+      color_temp_kelvin: Number.isFinite(master.sleep?.color_temp_kelvin) ? master.sleep.color_temp_kelvin : 2200,
+      hs_color: Array.isArray(master.sleep?.hs_color) ? master.sleep.hs_color.slice(0, 2) : [30, 70],
     },
   };
 }
@@ -1324,7 +1482,8 @@ function setSolarEditable(kind, editable) {
 }
 
 function buildOverlayBundle(monthSamples, current) {
-  const envelope = buildEnvelope(monthSamples);
+  const envelopeSamples = current ? monthSamples.concat([current]) : monthSamples;
+  const envelope = buildEnvelope(envelopeSamples);
   return {
     envelope,
     months: monthSamples,
@@ -1348,6 +1507,9 @@ function getBaseSunTimes(solar, circadian) {
 function buildEnvelope(monthSamples) {
   if (!monthSamples.length) {
     return null;
+  }
+  if (monthSamples.length === 1) {
+    return { min: monthSamples[0], max: monthSamples[0] };
   }
   const min = [];
   const max = [];
@@ -1625,6 +1787,9 @@ cancelBtn.addEventListener("click", closeEditor);
 if (circadianToggle) {
   circadianToggle.addEventListener("change", toggleCircadianFields);
 }
+if (sleepUseMasterToggle) {
+  sleepUseMasterToggle.addEventListener("change", updateSleepOverrides);
+}
 if (solarBrightnessToggle) {
   solarBrightnessToggle.addEventListener("change", updateCurveOverlays);
 }
@@ -1663,6 +1828,21 @@ if (saveMasterBtn) {
     state.master.smoothing = {
       brightness_rate_pct: roundTo2(Number(smoothBrightnessRateInput?.value ?? 0.11)),
       ct_rate_k: roundTo2(Number(smoothCtRateInput?.value ?? 2.67)),
+    };
+    state.master.sleep = {
+      brightness_pct: parseIntOr(sleepBrightnessInput?.value, 10),
+      color_temp_kelvin: parseIntOr(sleepCtInput?.value, 2200),
+      hs_color: [
+        parseFloatOr(sleepHueInput?.value, 30),
+        parseFloatOr(sleepSatInput?.value, 70),
+      ],
+    };
+    state.master.away = {
+      start_minutes: parseTimeToMinutes(awayStartInput?.value, 360),
+      end_minutes: parseTimeToMinutes(awayEndInput?.value, 1350),
+      min_minutes: parseIntOr(awayMinMinutesInput?.value, 30),
+      max_minutes: parseIntOr(awayMaxMinutesInput?.value, 180),
+      offset_minutes: parseIntOr(awayOffsetMinutesInput?.value, 30),
     };
     try {
       await saveConfig();
@@ -1793,6 +1973,18 @@ form.addEventListener("submit", async (event) => {
 
   const useMasterBrightness = useMasterBrightnessToggle ? useMasterBrightnessToggle.checked : false;
   const useMasterColor = useMasterColorToggle ? useMasterColorToggle.checked : false;
+  const sleepUseMaster = sleepUseMasterToggle ? sleepUseMasterToggle.checked : true;
+  const sleepPayload = {
+    use_master: sleepUseMaster,
+  };
+  if (!sleepUseMaster) {
+    sleepPayload.brightness_pct = clampValue(parseIntOr(sleepBrightnessOverrideInput?.value, 10), 1, 100);
+    sleepPayload.color_temp_kelvin = clampValue(parseIntOr(sleepCtOverrideInput?.value, 2200), 1500, 8000);
+    sleepPayload.hs_color = [
+      clampValue(parseFloatOr(sleepHueOverrideInput?.value, 30), 0, 360),
+      clampValue(parseFloatOr(sleepSatOverrideInput?.value, 70), 0, 100),
+    ];
+  }
   const payload = {
     name,
     unique_id: uniqueId || name,
@@ -1800,6 +1992,7 @@ form.addEventListener("submit", async (event) => {
     tags,
     weather_enabled: weatherEnabledToggle ? weatherEnabledToggle.checked : false,
     limits: readLimitInputs(),
+    sleep: sleepPayload,
     circadian: {
       enabled: circadianToggle ? circadianToggle.checked : false,
       use_master_brightness: useMasterBrightness,

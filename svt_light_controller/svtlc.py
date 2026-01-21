@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import random
 import statistics
 import time
 from collections import Counter
@@ -24,6 +25,8 @@ TOPIC_LIMITS_SET = "svtlc/+/limits/set"
 TOPIC_LIMITS_STATE = "svtlc/{}/limits"
 TOPIC_MODE_SET = "svtlc/+/mode/set"
 TOPIC_MODE_STATE = "svtlc/{}/mode"
+TOPIC_AWAY_STATE = "svtlc/{}/away"
+TOPIC_INPUTS_STATUS = "svtlc/{}/inputs/status"
 SUN_ENTITY_ID = "sun.sun"
 SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
 HA_CONFIG_URL = "http://supervisor/core/api/config"
@@ -87,17 +90,39 @@ def _write_config_payload(payload: dict) -> None:
 
 def _read_runtime_payload() -> dict:
     if not os.path.exists(RUNTIME_PATH):
-        return {"circadian_interval": 60}
+        return {"circadian_interval": 60, "modes": {}}
     try:
         with open(RUNTIME_PATH, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return {"circadian_interval": 60}
-    if isinstance(data, dict):
-        interval = data.get("circadian_interval")
-        if isinstance(interval, int) and 1 <= interval <= 3600:
-            return {"circadian_interval": interval}
-    return {"circadian_interval": 60}
+        return {"circadian_interval": 60, "modes": {}}
+    if not isinstance(data, dict):
+        return {"circadian_interval": 60, "modes": {}}
+
+    interval = data.get("circadian_interval")
+    if not isinstance(interval, int) or not (1 <= interval <= 3600):
+        interval = 60
+    modes = data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    return {"circadian_interval": interval, "modes": modes}
+
+
+def _write_runtime_payload(payload: dict) -> None:
+    current = _read_runtime_payload()
+    if "modes" in payload and isinstance(payload.get("modes"), dict):
+        modes = current.get("modes", {})
+        if not isinstance(modes, dict):
+            modes = {}
+        modes.update(payload["modes"])
+        current["modes"] = modes
+        payload = {k: v for k, v in payload.items() if k != "modes"}
+    current.update(payload)
+    os.makedirs(os.path.dirname(RUNTIME_PATH), exist_ok=True)
+    tmp_path = f"{RUNTIME_PATH}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(current, handle, indent=2)
+    os.replace(tmp_path, RUNTIME_PATH)
 
 
 def _update_circadian_settings(controller_id: str, brightness_enabled: bool | None, color_temp_enabled: bool | None) -> bool:
@@ -205,7 +230,6 @@ def _normalize_mode(value: str | None) -> str:
         "manual": "Manual",
         "wakeup": "WakeUp",
         "sleep": "Sleep",
-        "night": "Night",
         "away": "Away",
     }
     return modes.get(cleaned, "Circadian")
@@ -235,9 +259,20 @@ def _update_mode(controller_id: str, mode: str) -> bool:
     return updated
 
 
+def _set_mode_local(controller_id: str, mode: str, last_modes: dict[str, dict]) -> None:
+    normalized = _normalize_mode(mode)
+    last_modes[controller_id] = {"mode": normalized}
+    _write_runtime_payload({"modes": {controller_id: normalized}})
+
+
 def _publish_mode_state(client, controller_id: str, mode: str) -> None:
     state_topic = TOPIC_MODE_STATE.format(controller_id)
     payload = {"mode": _normalize_mode(mode)}
+    client.publish(state_topic, json.dumps(payload), qos=0, retain=True)
+
+
+def _publish_away_state(client, controller_id: str, payload: dict) -> None:
+    state_topic = TOPIC_AWAY_STATE.format(controller_id)
     client.publish(state_topic, json.dumps(payload), qos=0, retain=True)
 
 
@@ -254,7 +289,7 @@ def _sync_mode_with_switches(
     has_mode = isinstance(raw_mode, str)
     mode_value = _normalize_mode(raw_mode)
 
-    if mode_value not in ("Circadian", "Manual") and has_mode:
+    if mode_value in ("Away", "Sleep") and has_mode:
         return mode_value
 
     desired = "Circadian" if (brightness_enabled or color_temp_enabled) else "Manual"
@@ -397,6 +432,83 @@ def _normalize_weather_config(master: dict) -> dict:
         "uv_max": max(1.0, float(weather.get("uv_max", 8))),
         "visibility_max_km": max(1.0, float(weather.get("visibility_max_km", 10))),
         "max_reduction_pct": max(0.0, min(100.0, float(weather.get("max_reduction_pct", 60)))),
+    }
+
+
+def _normalize_away_config(master: dict) -> dict:
+    away = master.get("away") if isinstance(master, dict) else {}
+    if not isinstance(away, dict):
+        away = {}
+
+    def _to_int(value, fallback: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    start_minutes = max(0, min(1439, _to_int(away.get("start_minutes"), 360)))
+    end_minutes = max(0, min(1439, _to_int(away.get("end_minutes"), 1350)))
+    min_minutes = max(1, min(1440, _to_int(away.get("min_minutes"), 30)))
+    max_minutes = max(min_minutes, min(1440, _to_int(away.get("max_minutes"), 180)))
+    offset_minutes = max(0, min(180, _to_int(away.get("offset_minutes"), 30)))
+
+    return {
+        "start_minutes": start_minutes,
+        "end_minutes": end_minutes,
+        "min_minutes": min_minutes,
+        "max_minutes": max_minutes,
+        "offset_minutes": offset_minutes,
+    }
+
+
+def _normalize_sleep_config(master: dict, controller: dict | None) -> dict:
+    master_sleep = master.get("sleep") if isinstance(master, dict) else {}
+    if not isinstance(master_sleep, dict):
+        master_sleep = {}
+    controller_sleep = controller.get("sleep") if isinstance(controller, dict) else {}
+    if not isinstance(controller_sleep, dict):
+        controller_sleep = {}
+
+    use_master = controller_sleep.get("use_master") is not False
+
+    def _pick_value(key: str, default):
+        if not use_master:
+            value = controller_sleep.get(key)
+            if value is not None:
+                return value
+        value = master_sleep.get(key)
+        return value if value is not None else default
+
+    def _to_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    brightness_pct = max(1, min(100, _to_int(_pick_value("brightness_pct", 10), 10)))
+    color_temp_kelvin = max(1500, min(8000, _to_int(_pick_value("color_temp_kelvin", 2200), 2200)))
+
+    hs_value = _pick_value("hs_color", [30, 70])
+    if isinstance(hs_value, list) and len(hs_value) >= 2:
+        hue = _to_float(hs_value[0], 30.0)
+        sat = _to_float(hs_value[1], 70.0)
+    else:
+        hue = 30.0
+        sat = 70.0
+    hue = max(0.0, min(360.0, hue))
+    sat = max(0.0, min(100.0, sat))
+
+    return {
+        "use_master": use_master,
+        "brightness_pct": brightness_pct,
+        "color_temp_kelvin": color_temp_kelvin,
+        "hs_color": [hue, sat],
     }
 
 def _normalize_smoothing_config(master: dict) -> dict:
@@ -1127,10 +1239,18 @@ def main() -> None:
     last_mode_state: dict[str, dict] = {}
     last_smoothed: dict[str, dict] = {}
     last_smooth_time: dict[str, float] = {}
+    last_away_state: dict[str, dict] = {}
+    away_state: dict[str, dict] = {}
+    away_window_cache: dict[str, dict] = {}
+    last_sleep_state: dict[str, dict] = {}
     config_cache = {"mtime": None, "controllers": [], "master": {}}
     sun_cache = {"fetched": 0.0, "attrs": None}
     ha_config_cache = {"fetched": 0.0, "config": None}
     weather_cache = {"fetched": 0.0, "values": {}}
+    runtime_cache = _read_runtime_payload()
+    for controller_id, mode in runtime_cache.get("modes", {}).items():
+        if isinstance(controller_id, str):
+            last_mode_state[controller_id] = {"mode": _normalize_mode(mode)}
 
 
     def _load_controller_cache() -> tuple[list[dict], dict]:
@@ -1185,6 +1305,204 @@ def main() -> None:
         weather_cache["fetched"] = now_ts
         weather_cache["values"] = values
         return values
+
+    def _get_away_window(now: datetime, cfg: dict) -> tuple[int, int, str]:
+        key = now.date().isoformat()
+        cache = away_window_cache.get("window")
+        if cache and cache.get("date") == key and cache.get("cfg") == cfg:
+            return cache["start"], cache["end"], cache["key"]
+
+        offset = cfg.get("offset_minutes", 0)
+        start_offset = random.randint(-offset, offset) if offset else 0
+        end_offset = random.randint(-offset, offset) if offset else 0
+        start = (cfg["start_minutes"] + start_offset) % 1440
+        end = (cfg["end_minutes"] + end_offset) % 1440
+        window_key = f"{key}:{start}:{end}"
+        away_window_cache["window"] = {
+            "date": key,
+            "start": start,
+            "end": end,
+            "key": window_key,
+            "cfg": dict(cfg),
+        }
+        return start, end, window_key
+
+    def _window_end_ts(now: datetime, start: int, end: int) -> float:
+        now_minutes = now.hour * 60 + now.minute + (now.second / 60.0)
+        if start <= end:
+            end_date = now.date()
+            if now_minutes > end:
+                end_date = (now + timedelta(days=1)).date()
+        else:
+            end_date = now.date() if now_minutes <= end else (now + timedelta(days=1)).date()
+        end_dt = datetime(end_date.year, end_date.month, end_date.day, tzinfo=now.tzinfo) + timedelta(minutes=end)
+        return end_dt.timestamp()
+
+    def _is_in_window(now_minutes: float, start: int, end: int) -> bool:
+        if start <= end:
+            return start <= now_minutes <= end
+        return now_minutes >= start or now_minutes <= end
+
+    def _random_duration_seconds(cfg: dict) -> float:
+        minutes = random.randint(cfg["min_minutes"], cfg["max_minutes"])
+        return float(minutes * 60)
+
+    def _handle_away_mode(
+        controller_id: str,
+        states: dict,
+        master_cfg: dict,
+        smooth_brightness: int | None,
+        smooth_ct: int | None,
+        brightness_enabled: bool,
+        color_temp_enabled: bool,
+    ) -> None:
+        cfg = _normalize_away_config(master_cfg)
+        now = datetime.now().astimezone()
+        now_minutes = now.hour * 60 + now.minute + (now.second / 60.0)
+        now_ts = time.time()
+        start, end, window_key = _get_away_window(now, cfg)
+
+        in_window = _is_in_window(now_minutes, start, end)
+        if not in_window:
+            away_state.pop(controller_id, None)
+            targets = _targets_all(states)
+            if targets:
+                _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+            away_payload = {
+                "active": True,
+                "on": False,
+                "next_ts": None,
+                "next_iso": None,
+                "window_start": start,
+                "window_end": end,
+                "now_minutes": now_minutes,
+                "in_window": False,
+            }
+            if last_away_state.get(controller_id) != away_payload:
+                last_away_state[controller_id] = away_payload
+                _publish_away_state(client, controller_id, away_payload)
+            return
+
+        current = away_state.get(controller_id)
+        if not current or current.get("window_key") != window_key:
+            current_on = bool(random.getrandbits(1))
+            next_ts = now_ts + _random_duration_seconds(cfg)
+            away_state[controller_id] = {"on": current_on, "next_ts": next_ts, "window_key": window_key}
+            state_changed = True
+        elif now_ts >= float(current.get("next_ts", 0)):
+            current_on = not bool(current.get("on"))
+            next_ts = now_ts + _random_duration_seconds(cfg)
+            away_state[controller_id] = {"on": current_on, "next_ts": next_ts, "window_key": window_key}
+            state_changed = True
+        else:
+            current_on = bool(current.get("on"))
+            state_changed = False
+
+        targets = _targets_all(states)
+
+        if current_on and state_changed and targets:
+            _publish_input_command(client, controller_id, "turn_on_inputs", targets)
+            if brightness_enabled and isinstance(smooth_brightness, int):
+                _publish_input_command(client, controller_id, "set_brightness_inputs", targets, smooth_brightness)
+            if color_temp_enabled and isinstance(smooth_ct, int):
+                color_targets = _targets_with_mode(states, "color_temp", only_on=False)
+                _publish_input_command(
+                    client,
+                    controller_id,
+                    "set_color_inputs",
+                    color_targets,
+                    color_payload={"color_temp_kelvin": smooth_ct, "color_mode": "color_temp"},
+                )
+        elif not current_on and state_changed and targets:
+            _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+
+        away_payload = {
+            "active": True,
+            "on": bool(current_on),
+            "next_ts": int(round(away_state[controller_id]["next_ts"])),
+            "next_iso": datetime.fromtimestamp(away_state[controller_id]["next_ts"], tz=now.tzinfo).isoformat(),
+            "window_start": start,
+            "window_end": end,
+            "now_minutes": now_minutes,
+            "in_window": True,
+        }
+        end_ts = _window_end_ts(now, start, end)
+        next_ts = away_state[controller_id]["next_ts"]
+        if end_ts <= next_ts:
+            action_ts = end_ts
+            action_type = "window_end"
+        else:
+            action_ts = next_ts
+            action_type = "toggle"
+        away_payload["next_action_ts"] = int(round(action_ts))
+        away_payload["next_action_iso"] = datetime.fromtimestamp(action_ts, tz=now.tzinfo).isoformat()
+        away_payload["next_action_type"] = action_type
+        if last_away_state.get(controller_id) != away_payload:
+            last_away_state[controller_id] = away_payload
+            _publish_away_state(client, controller_id, away_payload)
+
+    def _apply_sleep_targets(controller_id: str, controller_cfg: dict, master_cfg: dict, states: dict) -> None:
+        sleep_cfg = _normalize_sleep_config(master_cfg, controller_cfg)
+        limits = _normalize_limits(controller_cfg.get("limits") if isinstance(controller_cfg, dict) else None)
+        brightness = int(round(255.0 * (sleep_cfg["brightness_pct"] / 100.0)))
+        brightness = _scale_brightness(brightness, limits)
+        color_temp = _scale_color_temp(sleep_cfg["color_temp_kelvin"], [], limits)
+        hs_color = sleep_cfg["hs_color"]
+
+        targets_on = _targets_on(states)
+        if brightness is not None and targets_on:
+            _publish_input_command(
+                client,
+                controller_id,
+                "set_brightness_inputs",
+                targets_on,
+                brightness,
+            )
+
+        color_targets = _targets_with_mode(states, "hs", only_on=True)
+        ct_targets = _targets_with_mode(states, "color_temp", only_on=True)
+        if color_targets and ct_targets:
+            ct_targets = [target for target in ct_targets if target not in color_targets]
+
+        if color_targets:
+            _publish_input_command(
+                client,
+                controller_id,
+                "set_color_inputs",
+                color_targets,
+                color_payload={"hs_color": hs_color, "color_mode": "hs"},
+            )
+
+        if ct_targets and color_temp is not None:
+            _publish_input_command(
+                client,
+                controller_id,
+                "set_color_inputs",
+                ct_targets,
+                color_payload={"color_temp_kelvin": color_temp, "color_mode": "color_temp"},
+            )
+
+    def _handle_sleep_mode(
+        controller_id: str,
+        controller_cfg: dict,
+        master_cfg: dict,
+        states: dict,
+        output_state: str | None,
+    ) -> None:
+        if output_state != "on":
+            last_sleep_state[controller_id] = {"mode": "Sleep", "pending": True, "last_output": "off"}
+            return
+
+        sleep_state = last_sleep_state.get(controller_id) or {}
+        pending = True
+        if sleep_state.get("mode") == "Sleep":
+            pending = bool(sleep_state.get("pending", True) or sleep_state.get("last_output") != "on")
+
+        if not pending:
+            return
+
+        _apply_sleep_targets(controller_id, controller_cfg, master_cfg, states)
+        last_sleep_state[controller_id] = {"mode": "Sleep", "pending": False, "last_output": "on"}
 
     def _get_curve_range(points: list[dict]) -> tuple[float | None, float | None]:
         values = [float(point.get("v")) for point in points if isinstance(point, dict) and isinstance(point.get("v"), (int, float))]
@@ -1444,39 +1762,33 @@ def main() -> None:
             else circadian.get("solar_shift_color_temp", True)
         )
 
-        if brightness_enabled:
-            brightness_val = (
-                _evaluate_solar_curve(
-                    brightness_points,
-                    t_minutes,
-                    base_sunrise,
-                    base_sunset,
-                    sunrise,
-                    sunset,
-                    dst_offset if solar_brightness else 0,
-                )
-                if solar_brightness
-                else _evaluate_curve(brightness_points, t_minutes)
+        brightness_val = (
+            _evaluate_solar_curve(
+                brightness_points,
+                t_minutes,
+                base_sunrise,
+                base_sunset,
+                sunrise,
+                sunset,
+                dst_offset if solar_brightness else 0,
             )
-        else:
-            brightness_val = None
+            if solar_brightness
+            else _evaluate_curve(brightness_points, t_minutes)
+        )
 
-        if color_temp_enabled:
-            color_temp_val = (
-                _evaluate_solar_curve(
-                    color_temp_points,
-                    t_minutes,
-                    base_sunrise,
-                    base_sunset,
-                    sunrise,
-                    sunset,
-                    dst_offset if solar_color else 0,
-                )
-                if solar_color
-                else _evaluate_curve(color_temp_points, t_minutes)
+        color_temp_val = (
+            _evaluate_solar_curve(
+                color_temp_points,
+                t_minutes,
+                base_sunrise,
+                base_sunset,
+                sunrise,
+                sunset,
+                dst_offset if solar_color else 0,
             )
-        else:
-            color_temp_val = None
+            if solar_color
+            else _evaluate_curve(color_temp_points, t_minutes)
+        )
 
         brightness = int(max(0, min(255, round(brightness_val)))) if brightness_val is not None else None
         color_temp = int(max(1500, min(8000, round(color_temp_val)))) if color_temp_val is not None else None
@@ -1512,7 +1824,7 @@ def main() -> None:
             settings = last_circadian_settings.get(controller_id, {})
             brightness_enabled = settings.get("brightness_enabled", circadian.get("brightness_enabled", True))
             color_temp_enabled = settings.get("color_temp_enabled", circadian.get("color_temp_enabled", True))
-            if mode_value == "Manual":
+            if mode_value in ("Manual", "Sleep"):
                 brightness_enabled = False
                 color_temp_enabled = False
             mode_value = _sync_mode_with_switches(
@@ -1541,6 +1853,39 @@ def main() -> None:
                 master,
                 states=states,
             )
+            if mode_value == "Away":
+                _handle_away_mode(
+                    controller_id,
+                    states,
+                    master,
+                    smooth_brightness,
+                    smooth_ct,
+                    bool(brightness_enabled),
+                    bool(color_temp_enabled),
+                )
+                continue
+            away_state.pop(controller_id, None)
+            away_payload = {
+                "active": False,
+                "on": False,
+                "next_ts": None,
+                "next_iso": None,
+                "window_start": None,
+                "window_end": None,
+            }
+            if last_away_state.get(controller_id) != away_payload:
+                last_away_state[controller_id] = away_payload
+                _publish_away_state(client, controller_id, away_payload)
+            if mode_value == "Sleep":
+                _handle_sleep_mode(
+                    controller_id,
+                    controller,
+                    master,
+                    states,
+                    output_state,
+                )
+                continue
+            last_sleep_state.pop(controller_id, None)
             if not circadian_enabled:
                 continue
             if not states:
@@ -1686,6 +2031,9 @@ def main() -> None:
                 mode_value = payload
             normalized = _normalize_mode(mode_value)
             updated = _update_mode(controller_id, normalized)
+            _set_mode_local(controller_id, normalized, last_mode_state)
+            if normalized != "Sleep":
+                last_sleep_state.pop(controller_id, None)
             if normalized == "Manual":
                 _set_circadian_flags(
                     client,
@@ -1695,6 +2043,16 @@ def main() -> None:
                     color_temp_enabled=False,
                     persist=True,
                 )
+            elif normalized == "Sleep":
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    brightness_enabled=False,
+                    color_temp_enabled=False,
+                    persist=False,
+                )
+                last_sleep_state[controller_id] = {"mode": "Sleep", "pending": True, "last_output": None}
             elif normalized == "Circadian":
                 _set_circadian_flags(
                     client,
@@ -1731,7 +2089,59 @@ def main() -> None:
                 last_mode_state[controller_id] = mode_payload
                 _publish_mode_state(client, controller_id, mode_value)
             if controller_cfg:
-                _publish_circadian_targets(controller_id, controller_cfg, master)
+                states = last_inputs.get(controller_id, {})
+                (
+                    _raw_brightness,
+                    _raw_ct,
+                    _weather_brightness,
+                    _weather_ct,
+                    smooth_brightness,
+                    smooth_ct,
+                    _weather_reduction_pct,
+                    _brightness_enabled,
+                    _color_temp_enabled,
+                    _circadian_enabled,
+                    _output_state,
+                ) = _compute_targets(
+                    controller_id,
+                    controller_cfg,
+                    master,
+                    states=states,
+                    output_state_override=None,
+                    force_reset=False,
+                )
+                _publish_circadian_targets(controller_id, controller_cfg, master, states=states)
+                if mode_value == "Away":
+                    _handle_away_mode(
+                        controller_id,
+                        states,
+                        master,
+                        smooth_brightness,
+                        smooth_ct,
+                        bool(brightness_enabled),
+                        bool(color_temp_enabled),
+                    )
+                else:
+                    away_state.pop(controller_id, None)
+                    away_payload = {
+                        "active": False,
+                        "on": False,
+                        "next_ts": None,
+                        "next_iso": None,
+                        "window_start": None,
+                        "window_end": None,
+                    }
+                    if last_away_state.get(controller_id) != away_payload:
+                        last_away_state[controller_id] = away_payload
+                        _publish_away_state(client, controller_id, away_payload)
+                if mode_value == "Sleep":
+                    _handle_sleep_mode(
+                        controller_id,
+                        controller_cfg,
+                        master,
+                        states,
+                        _output_state,
+                    )
             return
 
         if suffix == "event":
@@ -1796,8 +2206,10 @@ def main() -> None:
                     None,
                 )
                 mode_value = _normalize_mode(controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
-                if mode_value not in ("Night", "Away"):
+                if mode_value not in ("Away"):
                     _update_mode(controller_id, "Circadian")
+                    prev_mode = last_mode_state.get(controller_id)
+                    _set_mode_local(controller_id, "Circadian", last_mode_state)
                     _set_circadian_flags(
                         client,
                         controller_id,
@@ -1807,9 +2219,18 @@ def main() -> None:
                         persist=True,
                     )
                     mode_payload = {"mode": "Circadian"}
-                    if last_mode_state.get(controller_id) != mode_payload:
+                    if prev_mode != mode_payload:
                         last_mode_state[controller_id] = mode_payload
                         _publish_mode_state(client, controller_id, "Circadian")
+                elif mode_value == "Away":
+                    _set_circadian_flags(
+                        client,
+                        controller_id,
+                        last_circadian_settings,
+                        brightness_enabled=True,
+                        color_temp_enabled=True,
+                        persist=True,
+                    )
                 if brightness is None and not color_payload:
                     if controller_cfg:
                         smooth_brightness, smooth_ct, _, _, _, _ = _publish_circadian_targets(
@@ -1862,6 +2283,9 @@ def main() -> None:
                         targets,
                         effect=effect,
                     )
+                if mode_value == "Sleep" and controller_cfg:
+                    _apply_sleep_targets(controller_id, controller_cfg, master, states)
+                    last_sleep_state[controller_id] = {"mode": "Sleep", "pending": False, "last_output": "on"}
             elif event == "manual_brightness" and isinstance(brightness, int):
                 _set_circadian_flags(
                     client,
@@ -1940,33 +2364,31 @@ def main() -> None:
         payload = _parse_payload(msg.payload)
         states = payload.get("states", {}) if isinstance(payload, dict) else {}
         last_inputs[controller_id] = states
+        if isinstance(states, dict) and states:
+            total_inputs = len(states)
+            unavailable = sum(
+                1
+                for value in states.values()
+                if isinstance(value, dict)
+                and str(value.get("state", "")).strip().lower() in {"unknown", "unavailable"}
+            )
+            all_unavailable = unavailable == total_inputs
+            any_unavailable = unavailable > 0
+        else:
+            total_inputs = 0
+            unavailable = 0
+            all_unavailable = True
+            any_unavailable = True
+        status_payload = {
+            "all_unavailable": bool(all_unavailable),
+            "any_unavailable": bool(any_unavailable),
+            "available_count": max(0, total_inputs - unavailable),
+            "total_count": total_inputs,
+        }
+        status_topic = TOPIC_INPUTS_STATUS.format(controller_id)
+        client.publish(status_topic, json.dumps(status_payload), qos=0, retain=True)
 
         output_state, output_brightness = _state_from_inputs(states)
-        if output_state != "on":
-            controllers, _ = _load_controller_cache()
-            controller_cfg = next(
-                (
-                    controller
-                    for controller in controllers
-                    if isinstance(controller, dict)
-                    and _normalize_controller_id(controller.get("unique_id") or controller.get("name") or "")
-                    == controller_id
-                ),
-                None,
-            )
-            mode_value = _normalize_mode(
-                last_mode_state.get(controller_id, {}).get("mode")
-                or (controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
-            )
-            if mode_value == "Circadian":
-                _set_circadian_flags(
-                    client,
-                    controller_id,
-                    last_circadian_settings,
-                    brightness_enabled=True,
-                    color_temp_enabled=True,
-                    persist=True,
-                )
         controllers, master = _load_controller_cache()
         controller_cfg = next(
             (
@@ -1979,6 +2401,47 @@ def main() -> None:
             None,
         )
         if controller_cfg:
+            prev_state = last_output.get(controller_id, {}).get("state")
+            mode_value = _normalize_mode(
+                last_mode_state.get(controller_id, {}).get("mode")
+                or (controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
+            )
+            if output_state == "on" and prev_state != "on":
+                if mode_value == "Away":
+                    _set_circadian_flags(
+                        client,
+                        controller_id,
+                        last_circadian_settings,
+                        brightness_enabled=True,
+                        color_temp_enabled=True,
+                        persist=True,
+                    )
+                elif mode_value not in ("Away"):
+                    if mode_value != "Circadian":
+                        _update_mode(controller_id, "Circadian")
+                        prev_mode = last_mode_state.get(controller_id)
+                        _set_mode_local(controller_id, "Circadian", last_mode_state)
+                        mode_payload = {"mode": "Circadian"}
+                        if prev_mode != mode_payload:
+                            last_mode_state[controller_id] = mode_payload
+                            _publish_mode_state(client, controller_id, "Circadian")
+                    _set_circadian_flags(
+                        client,
+                        controller_id,
+                        last_circadian_settings,
+                        brightness_enabled=True,
+                        color_temp_enabled=True,
+                        persist=True,
+                    )
+            if output_state != "on" and mode_value == "Circadian":
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    brightness_enabled=True,
+                    color_temp_enabled=True,
+                    persist=True,
+                )
             _publish_circadian_targets(
                 controller_id,
                 controller_cfg,
@@ -1987,6 +2450,14 @@ def main() -> None:
                 output_state_override=output_state,
                 force_reset=output_state != "on",
             )
+            mode_value = _normalize_mode(
+                last_mode_state.get(controller_id, {}).get("mode")
+                or (controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
+            )
+            if mode_value == "Sleep":
+                _handle_sleep_mode(controller_id, controller_cfg, master, states, output_state)
+            else:
+                last_sleep_state.pop(controller_id, None)
         modes = _union_color_modes(states)
         min_mireds, max_mireds = _union_mireds(states)
         color_payload = _median_color_from_inputs(states)

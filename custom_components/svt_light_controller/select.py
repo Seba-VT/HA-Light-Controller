@@ -16,7 +16,7 @@ from .data import get_all_controllers
 
 _LOGGER = logging.getLogger(__name__)
 
-MODE_OPTIONS = ["Circadian", "Manual", "Away", "Sleep", "Night", "WakeUp"]
+MODE_OPTIONS = ["Circadian", "Manual", "Away", "Sleep", "WakeUp"]
 
 
 def _normalize_unique_id(raw_unique_id: str) -> str:

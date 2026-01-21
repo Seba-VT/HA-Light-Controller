@@ -49,24 +49,37 @@ def _write_config(payload: dict) -> None:
 
 def _read_runtime() -> dict:
     if not os.path.exists(RUNTIME_PATH):
-        return {"circadian_interval": 60}
+        return {"circadian_interval": 60, "modes": {}}
     try:
         with open(RUNTIME_PATH, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return {"circadian_interval": 60}
-    if isinstance(data, dict):
-        interval = data.get("circadian_interval")
-        if isinstance(interval, int) and 1 <= interval <= 3600:
-            return {"circadian_interval": interval}
-    return {"circadian_interval": 60}
+        return {"circadian_interval": 60, "modes": {}}
+    if not isinstance(data, dict):
+        return {"circadian_interval": 60, "modes": {}}
+    interval = data.get("circadian_interval")
+    if not isinstance(interval, int) or not (1 <= interval <= 3600):
+        interval = 60
+    modes = data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    return {"circadian_interval": interval, "modes": modes}
 
 
 def _write_runtime(payload: dict) -> None:
     os.makedirs(os.path.dirname(RUNTIME_PATH), exist_ok=True)
+    current = _read_runtime()
+    if "modes" in payload and isinstance(payload.get("modes"), dict):
+        modes = current.get("modes", {})
+        if not isinstance(modes, dict):
+            modes = {}
+        modes.update(payload["modes"])
+        current["modes"] = modes
+        payload = {k: v for k, v in payload.items() if k != "modes"}
+    current.update(payload)
     tmp_path = f"{RUNTIME_PATH}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
+        json.dump(current, handle, indent=2)
     os.replace(tmp_path, RUNTIME_PATH)
 
 

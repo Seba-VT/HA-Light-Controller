@@ -101,6 +101,34 @@ class SvtLightControllerSensorManager:
                     self._entities[entity_id] = entity
                     new_entities.append(entity)
 
+            inputs_entity_id = f"{controller_id}_inputs_status"
+            next_ids.add(inputs_entity_id)
+            if inputs_entity_id in self._entities:
+                await self._entities[inputs_entity_id].async_apply_config(name, input_lights)
+            else:
+                entity = SvtLightControllerInputsStatusSensor(
+                    name=name,
+                    unique_id=unique_id,
+                    input_lights=input_lights,
+                    hass=self._hass,
+                )
+                self._entities[inputs_entity_id] = entity
+                new_entities.append(entity)
+
+            away_entity_id = f"{controller_id}_away_status"
+            next_ids.add(away_entity_id)
+            if away_entity_id in self._entities:
+                await self._entities[away_entity_id].async_apply_config(name, input_lights)
+            else:
+                entity = SvtLightControllerAwayStatusSensor(
+                    name=name,
+                    unique_id=unique_id,
+                    input_lights=input_lights,
+                    hass=self._hass,
+                )
+                self._entities[away_entity_id] = entity
+                new_entities.append(entity)
+
             weather_entity_id = f"{controller_id}_weather_reduction"
             next_ids.add(weather_entity_id)
             if weather_entity_id in self._entities:
@@ -247,6 +275,235 @@ class SvtLightControllerCircadianSensor(SensorEntity):
                 self._attr_native_value = int(round(float(value)))
         else:
             self._attr_native_value = None
+        self.async_write_ha_state()
+
+    async def _ensure_device_link(self) -> None:
+        try:
+            entries = self._hass.config_entries.async_entries(DOMAIN)
+            if not entries:
+                return
+            config_entry_id = entries[0].entry_id
+
+            device_registry = dr.async_get(self._hass)
+            device = device_registry.async_get_or_create(
+                config_entry_id=config_entry_id,
+                identifiers={(DOMAIN, self._controller_id)},
+                name=self._device_name,
+                manufacturer="SVT",
+                model="SVT Light Controller",
+            )
+
+            entity_registry = er.async_get(self._hass)
+            entity = entity_registry.async_get(self.entity_id)
+            if entity and entity.device_id != device.id:
+                entity_registry.async_update_entity(self.entity_id, device_id=device.id)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to link SVTLC device")
+
+
+class SvtLightControllerAwayStatusSensor(SensorEntity):
+    """Read-only sensor entity for away mode status."""
+
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        name: str,
+        unique_id: str,
+        input_lights: list[str],
+        hass: HomeAssistant,
+    ) -> None:
+        self._input_lights = input_lights
+        self._hass = hass
+        self._controller_id = _normalize_unique_id(unique_id)
+        self._device_name = f"SVTLC {name}"
+        self._attr_unique_id = f"{self._controller_id}_away_status"
+        self._attr_name = "Away Status"
+        self._attr_icon = "mdi:home-export-outline"
+        self._topic_state = f"svtlc/{self._controller_id}/away"
+        self._unsub_mqtt = None
+        self._attr_native_value = "inactive"
+        self._attrs: dict = {}
+
+    async def async_apply_config(self, name: str, input_lights: list[str]) -> None:
+        if name:
+            self._attr_name = "Away Status"
+        self._device_name = f"SVTLC {name}"
+        self._input_lights = input_lights
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._controller_id)},
+            "name": self._device_name,
+            "manufacturer": "SVT",
+            "model": "SVT Light Controller",
+        }
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        attrs = {
+            "input_lights": self._input_lights,
+            "controller_id": self._controller_id,
+            "mqtt_topic_state": self._topic_state,
+        }
+        attrs.update(self._attrs)
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        await self._ensure_device_link()
+        self._unsub_mqtt = await mqtt.async_subscribe(
+            self._hass,
+            self._topic_state,
+            self._handle_mqtt_state,
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_mqtt:
+            self._unsub_mqtt()
+            self._unsub_mqtt = None
+
+    @callback
+    def _handle_mqtt_state(self, msg) -> None:
+        payload = _parse_json_payload(msg.payload)
+        if not payload:
+            return
+        active = payload.get("active")
+        is_on = payload.get("on")
+        in_window = payload.get("in_window")
+        window_start = payload.get("window_start")
+        window_end = payload.get("window_end")
+        window_start_time = self._format_minutes(window_start)
+        window_end_time = self._format_minutes(window_end)
+        self._attr_native_value = "active" if active else "inactive"
+        self._attrs = {
+            "on_state": bool(is_on) if isinstance(is_on, bool) else None,
+            "in_window": bool(in_window) if isinstance(in_window, bool) else None,
+            "next_action_type": payload.get("next_action_type"),
+            "next_action_ts": payload.get("next_action_ts"),
+            "next_action_iso": payload.get("next_action_iso"),
+            "window_start": window_start_time,
+            "window_end": window_end_time,
+        }
+        self.async_write_ha_state()
+
+    @staticmethod
+    def _format_minutes(value) -> str | None:
+        if not isinstance(value, (int, float)):
+            return None
+        minutes = int(value) % 1440
+        return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+    async def _ensure_device_link(self) -> None:
+        try:
+            entries = self._hass.config_entries.async_entries(DOMAIN)
+            if not entries:
+                return
+            config_entry_id = entries[0].entry_id
+
+            device_registry = dr.async_get(self._hass)
+            device = device_registry.async_get_or_create(
+                config_entry_id=config_entry_id,
+                identifiers={(DOMAIN, self._controller_id)},
+                name=self._device_name,
+                manufacturer="SVT",
+                model="SVT Light Controller",
+            )
+
+            entity_registry = er.async_get(self._hass)
+            entity = entity_registry.async_get(self.entity_id)
+            if entity and entity.device_id != device.id:
+                entity_registry.async_update_entity(self.entity_id, device_id=device.id)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to link SVTLC device")
+
+
+class SvtLightControllerInputsStatusSensor(SensorEntity):
+    """Read-only sensor entity for input availability."""
+
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        name: str,
+        unique_id: str,
+        input_lights: list[str],
+        hass: HomeAssistant,
+    ) -> None:
+        self._input_lights = input_lights
+        self._hass = hass
+        self._controller_id = _normalize_unique_id(unique_id)
+        self._device_name = f"SVTLC {name}"
+        self._attr_unique_id = f"{self._controller_id}_inputs_status"
+        self._attr_name = "Inputs Availability"
+        self._attr_icon = "mdi:alert-circle-outline"
+        self._topic_state = f"svtlc/{self._controller_id}/inputs/status"
+        self._unsub_mqtt = None
+        self._attr_native_value = "ok"
+        self._attrs: dict = {}
+
+    async def async_apply_config(self, name: str, input_lights: list[str]) -> None:
+        if name:
+            self._attr_name = "Inputs Availability"
+        self._device_name = f"SVTLC {name}"
+        self._input_lights = input_lights
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._controller_id)},
+            "name": self._device_name,
+            "manufacturer": "SVT",
+            "model": "SVT Light Controller",
+        }
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        attrs = {
+            "input_lights": self._input_lights,
+            "controller_id": self._controller_id,
+            "mqtt_topic_state": self._topic_state,
+        }
+        attrs.update(self._attrs)
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        await self._ensure_device_link()
+        self._unsub_mqtt = await mqtt.async_subscribe(
+            self._hass,
+            self._topic_state,
+            self._handle_mqtt_state,
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_mqtt:
+            self._unsub_mqtt()
+            self._unsub_mqtt = None
+
+    @callback
+    def _handle_mqtt_state(self, msg) -> None:
+        payload = _parse_json_payload(msg.payload)
+        if not payload:
+            return
+        all_unavailable = payload.get("all_unavailable")
+        any_unavailable = payload.get("any_unavailable")
+        available_count = payload.get("available_count")
+        total_count = payload.get("total_count")
+        if all_unavailable:
+            state_value = "all_unavailable"
+        elif any_unavailable:
+            state_value = "degraded"
+        else:
+            state_value = "ok"
+        self._attr_native_value = state_value
+        self._attrs = {
+            "all_unavailable": bool(all_unavailable) if isinstance(all_unavailable, bool) else None,
+            "any_unavailable": bool(any_unavailable) if isinstance(any_unavailable, bool) else None,
+            "available_count": int(available_count) if isinstance(available_count, (int, float)) else None,
+            "total_count": int(total_count) if isinstance(total_count, (int, float)) else None,
+        }
         self.async_write_ha_state()
 
     async def _ensure_device_link(self) -> None:

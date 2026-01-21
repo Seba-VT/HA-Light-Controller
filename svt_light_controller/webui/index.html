@@ -63,6 +63,33 @@
             </label>
           </div>
         </div>
+        <div class="weather-panel">
+          <div class="curve-header">
+            <span>Away Mode</span>
+          </div>
+          <div class="weather-grid">
+            <label>
+              Active start
+              <input type="time" id="away-start" step="60" />
+            </label>
+            <label>
+              Active end
+              <input type="time" id="away-end" step="60" />
+            </label>
+            <label>
+              Min duration (minutes)
+              <input type="number" id="away-min-minutes" min="1" max="1440" step="1" />
+            </label>
+            <label>
+              Max duration (minutes)
+              <input type="number" id="away-max-minutes" min="1" max="1440" step="1" />
+            </label>
+            <label>
+              Window offset range (minutes)
+              <input type="number" id="away-offset-minutes" min="0" max="180" step="1" />
+            </label>
+          </div>
+        </div>
         <div class="curve-panel">
             <div class="curve-header">
               <span>Brightness curve</span>
@@ -121,6 +148,29 @@
             <label>
               Max CT reduction (%)
               <input type="number" id="weather-max-reduction" min="0" max="100" step="1" />
+            </label>
+          </div>
+        </div>
+        <div class="weather-panel">
+          <div class="curve-header">
+            <span>Sleep Mode</span>
+          </div>
+          <div class="weather-grid">
+            <label>
+              Brightness (%)
+              <input type="number" id="sleep-brightness" min="1" max="100" step="1" />
+            </label>
+            <label>
+              Color temp (K)
+              <input type="number" id="sleep-ct" min="1500" max="8000" step="10" />
+            </label>
+            <label>
+              Color hue
+              <input type="number" id="sleep-hue" min="0" max="360" step="1" />
+            </label>
+            <label>
+              Color saturation
+              <input type="number" id="sleep-sat" min="0" max="100" step="1" />
             </label>
           </div>
         </div>
@@ -283,7 +333,34 @@
                 <span id="weather-min-value" class="limit-value">2300K</span>
               </div>
             </div>
+            </div>
           </div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Sleep Mode</span>
+            </div>
+            <div class="weather-grid">
+              <label class="toggle-row curve-toggle">
+                <input type="checkbox" id="sleep-use-master" checked />
+                Use master sleep settings
+              </label>
+              <label>
+                Brightness (%)
+                <input type="number" id="sleep-brightness-override" min="1" max="100" step="1" />
+              </label>
+              <label>
+                Color temp (K)
+                <input type="number" id="sleep-ct-override" min="1500" max="8000" step="10" />
+              </label>
+              <label>
+                Color hue
+                <input type="number" id="sleep-hue-override" min="0" max="360" step="1" />
+              </label>
+              <label>
+                Color saturation
+                <input type="number" id="sleep-sat-override" min="0" max="100" step="1" />
+              </label>
+            </div>
           </div>
           <label>
             Input Lights
