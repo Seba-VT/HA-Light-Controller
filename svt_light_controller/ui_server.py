@@ -49,21 +49,24 @@ def _write_config(payload: dict) -> None:
 
 def _read_runtime() -> dict:
     if not os.path.exists(RUNTIME_PATH):
-        return {"circadian_interval": 60, "modes": {}}
+        return {"circadian_interval": 60, "wakeup_interval": 2, "modes": {}}
     try:
         with open(RUNTIME_PATH, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return {"circadian_interval": 60, "modes": {}}
+        return {"circadian_interval": 60, "wakeup_interval": 2, "modes": {}}
     if not isinstance(data, dict):
-        return {"circadian_interval": 60, "modes": {}}
+        return {"circadian_interval": 60, "wakeup_interval": 2, "modes": {}}
     interval = data.get("circadian_interval")
     if not isinstance(interval, int) or not (1 <= interval <= 3600):
         interval = 60
+    wakeup_interval = data.get("wakeup_interval")
+    if not isinstance(wakeup_interval, int) or not (1 <= wakeup_interval <= 3600):
+        wakeup_interval = 2
     modes = data.get("modes")
     if not isinstance(modes, dict):
         modes = {}
-    return {"circadian_interval": interval, "modes": modes}
+    return {"circadian_interval": interval, "wakeup_interval": wakeup_interval, "modes": modes}
 
 
 def _write_runtime(payload: dict) -> None:
@@ -335,13 +338,23 @@ class SvtlcHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 return self._send_json({"error": "invalid_json"}, status=HTTPStatus.BAD_REQUEST)
 
-            if not isinstance(payload, dict) or not isinstance(payload.get("circadian_interval"), int):
+            if not isinstance(payload, dict):
                 return self._send_json({"error": "invalid_payload"}, status=HTTPStatus.BAD_REQUEST)
-            interval = payload["circadian_interval"]
-            if interval < 1 or interval > 3600:
+            interval = payload.get("circadian_interval")
+            wakeup_interval = payload.get("wakeup_interval")
+            updates = {}
+            if interval is not None:
+                if not isinstance(interval, int) or interval < 1 or interval > 3600:
+                    return self._send_json({"error": "invalid_payload"}, status=HTTPStatus.BAD_REQUEST)
+                updates["circadian_interval"] = interval
+            if wakeup_interval is not None:
+                if not isinstance(wakeup_interval, int) or wakeup_interval < 1 or wakeup_interval > 3600:
+                    return self._send_json({"error": "invalid_payload"}, status=HTTPStatus.BAD_REQUEST)
+                updates["wakeup_interval"] = wakeup_interval
+            if not updates:
                 return self._send_json({"error": "invalid_payload"}, status=HTTPStatus.BAD_REQUEST)
 
-            _write_runtime({"circadian_interval": interval})
+            _write_runtime(updates)
             return self._send_json({"ok": True})
 
         if path != "/api/config":

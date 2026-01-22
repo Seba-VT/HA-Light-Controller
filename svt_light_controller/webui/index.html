@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=20260121-4" />
 </head>
 <body class="theme-industrial">
   <div class="grid-overlay" aria-hidden="true"></div>
@@ -36,142 +36,232 @@
       <section id="master" class="panel hidden">
         <div class="section-header">
           <div>
-            <h2>Master Curves</h2>
-            <p class="section-hint">Shared curves that controllers can opt into.</p>
+            <h2>Master Settings</h2>
+            <p class="section-hint">Shared settings that controllers can opt into.</p>
           </div>
           <div class="controller-actions">
             <button id="hide-master" class="ghost">Hide</button>
             <button id="save-master" class="primary">Save Master</button>
           </div>
         </div>
-        <label class="runtime-control">
-          Circadian update interval (seconds)
-          <input type="number" id="circadian-interval" min="1" max="3600" step="1" />
-        </label>
-        <div class="weather-panel">
-          <div class="curve-header">
-            <span>Smoothing</span>
+        <div class="settings-group">
+          <div class="settings-group-title">Circadian</div>
+          <div class="curve-panel">
+              <div class="curve-header">
+                <span>Brightness curve</span>
+                <div class="curve-controls">
+                  <label class="toggle-row curve-toggle">
+                    <input type="checkbox" id="master-solar-brightness" checked />
+                    Solar shift
+                  </label>
+                <span class="curve-scale">%</span>
+                </div>
+              </div>
+            <canvas id="master-curve-brightness" class="curve-canvas" width="460" height="160"></canvas>
           </div>
-          <div class="weather-grid">
-            <label>
-              Brightness rate (% per s)
-              <input type="number" id="smooth-brightness-rate" min="0" max="100" step="0.01" />
-            </label>
-            <label>
-              CT rate (K per s)
-              <input type="number" id="smooth-ct-rate" min="0" max="1000" step="0.01" />
-            </label>
-          </div>
-        </div>
-        <div class="weather-panel">
-          <div class="curve-header">
-            <span>Away Mode</span>
-          </div>
-          <div class="weather-grid">
-            <label>
-              Active start
-              <input type="time" id="away-start" step="60" />
-            </label>
-            <label>
-              Active end
-              <input type="time" id="away-end" step="60" />
-            </label>
-            <label>
-              Min duration (minutes)
-              <input type="number" id="away-min-minutes" min="1" max="1440" step="1" />
-            </label>
-            <label>
-              Max duration (minutes)
-              <input type="number" id="away-max-minutes" min="1" max="1440" step="1" />
-            </label>
-            <label>
-              Window offset range (minutes)
-              <input type="number" id="away-offset-minutes" min="0" max="180" step="1" />
-            </label>
-          </div>
-        </div>
-        <div class="curve-panel">
+          <div class="curve-panel">
             <div class="curve-header">
-              <span>Brightness curve</span>
+              <span>Color temperature curve</span>
               <div class="curve-controls">
                 <label class="toggle-row curve-toggle">
-                  <input type="checkbox" id="master-solar-brightness" checked />
+                  <input type="checkbox" id="master-solar-color-temp" checked />
                   Solar shift
                 </label>
-              <span class="curve-scale">%</span>
+                <span class="curve-scale">Kelvin</span>
               </div>
             </div>
-          <canvas id="master-curve-brightness" class="curve-canvas" width="460" height="160"></canvas>
-        </div>
-        <div class="curve-panel">
-          <div class="curve-header">
-            <span>Color temperature curve</span>
-            <div class="curve-controls">
-              <label class="toggle-row curve-toggle">
-                <input type="checkbox" id="master-solar-color-temp" checked />
-                Solar shift
+            <canvas id="master-curve-color-temp" class="curve-canvas" width="460" height="160"></canvas>
+          </div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Smoothing</span>
+            </div>
+            <div class="weather-grid">
+              <label>
+                Brightness rate (% per s)
+                <input type="number" id="smooth-brightness-rate" min="0" max="100" step="0.01" />
               </label>
-              <span class="curve-scale">Kelvin</span>
+              <label>
+                CT rate (K per s)
+                <input type="number" id="smooth-ct-rate" min="0" max="1000" step="0.01" />
+              </label>
             </div>
           </div>
-          <canvas id="master-curve-color-temp" class="curve-canvas" width="460" height="160"></canvas>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Weather CT</span>
+            </div>
+            <div class="weather-grid">
+              <label>
+                Cloud coverage sensor
+                <input type="text" id="weather-cloud-sensor" placeholder="sensor.openweathermap_cloud_coverage" />
+              </label>
+              <label>
+                UV index sensor
+                <input type="text" id="weather-uv-sensor" placeholder="sensor.openweathermap_uv_index" />
+              </label>
+              <label>
+                Visibility sensor
+                <input type="text" id="weather-visibility-sensor" placeholder="sensor.openweathermap_visibility" />
+              </label>
+              <label>
+                Weather code sensor
+                <input type="text" id="weather-code-sensor" placeholder="sensor.openweathermap_weather_code" />
+              </label>
+              <label>
+                UV max
+                <input type="number" id="weather-uv-max" min="1" max="20" step="1" />
+              </label>
+              <label>
+                Visibility max (km)
+                <input type="number" id="weather-visibility-max" min="1" max="50" step="1" />
+              </label>
+              <label>
+                Max CT reduction (%)
+                <input type="number" id="weather-max-reduction" min="0" max="100" step="1" />
+              </label>
+            </div>
+          </div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Update</span>
+            </div>
+            <label class="runtime-control">
+              Circadian update interval (seconds)
+              <input type="number" id="circadian-interval" min="1" max="3600" step="1" />
+            </label>
+          </div>
         </div>
-        <div class="weather-panel">
-          <div class="curve-header">
-            <span>Weather CT</span>
+        <div class="settings-group">
+          <div class="settings-group-title">Away Mode</div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Schedule</span>
+            </div>
+            <div class="weather-grid">
+              <label>
+                Active start
+                <input type="time" id="away-start" step="60" />
+              </label>
+              <label>
+                Active end
+                <input type="time" id="away-end" step="60" />
+              </label>
+              <label>
+                Min duration (minutes)
+                <input type="number" id="away-min-minutes" min="1" max="1440" step="1" />
+              </label>
+              <label>
+                Max duration (minutes)
+                <input type="number" id="away-max-minutes" min="1" max="1440" step="1" />
+              </label>
+              <label>
+                Window offset range (minutes)
+                <input type="number" id="away-offset-minutes" min="0" max="180" step="1" />
+              </label>
+            </div>
           </div>
-          <div class="weather-grid">
-            <label>
-              Cloud coverage sensor
-              <input type="text" id="weather-cloud-sensor" placeholder="sensor.openweathermap_cloud_coverage" />
-            </label>
-            <label>
-              UV index sensor
-              <input type="text" id="weather-uv-sensor" placeholder="sensor.openweathermap_uv_index" />
-            </label>
-            <label>
-              Visibility sensor
-              <input type="text" id="weather-visibility-sensor" placeholder="sensor.openweathermap_visibility" />
-            </label>
-            <label>
-              Weather code sensor
-              <input type="text" id="weather-code-sensor" placeholder="sensor.openweathermap_weather_code" />
-            </label>
-            <label>
-              UV max
-              <input type="number" id="weather-uv-max" min="1" max="20" step="1" />
-            </label>
-            <label>
-              Visibility max (km)
-              <input type="number" id="weather-visibility-max" min="1" max="50" step="1" />
-            </label>
-            <label>
-              Max CT reduction (%)
-              <input type="number" id="weather-max-reduction" min="0" max="100" step="1" />
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">Sleep Mode</div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Targets</span>
+            </div>
+            <div class="weather-grid">
+              <label>
+                Brightness (%)
+                <input type="number" id="sleep-brightness" min="1" max="100" step="1" />
+              </label>
+              <label>
+                Color temp (K)
+                <input type="number" id="sleep-ct" min="1500" max="8000" step="10" />
+              </label>
+              <label>
+                Color hue
+                <input type="number" id="sleep-hue" min="0" max="360" step="1" />
+              </label>
+              <label>
+                Color saturation
+                <input type="number" id="sleep-sat" min="0" max="100" step="1" />
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">WakeUp Mode</div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Targets</span>
+            </div>
+            <div class="weather-grid">
+              <label>
+                Duration (minutes)
+                <input type="number" id="wakeup-duration" min="1" max="240" step="1" />
+              </label>
+              <label>
+                Start brightness (%)
+                <input type="number" id="wakeup-start-brightness" min="1" max="100" step="1" />
+              </label>
+            </div>
+          </div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Update</span>
+            </div>
+            <label class="runtime-control">
+              WakeUp update interval (seconds)
+              <input type="number" id="wakeup-interval" min="1" max="3600" step="1" />
             </label>
           </div>
         </div>
-        <div class="weather-panel">
-          <div class="curve-header">
-            <span>Sleep Mode</span>
+        <div class="settings-group">
+          <div class="settings-group-title">Delivery</div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Retries</span>
+            </div>
+            <div class="weather-grid">
+              <label class="toggle-row curve-toggle">
+                <input type="checkbox" id="retry-enabled" checked />
+                Enable retries
+              </label>
+              <label>
+                Retry delay (seconds)
+                <input type="number" id="retry-delay" min="1" max="60" step="1" />
+              </label>
+              <label>
+                Max retries
+                <input type="number" id="retry-max" min="1" max="10" step="1" />
+              </label>
+            </div>
           </div>
-          <div class="weather-grid">
-            <label>
-              Brightness (%)
-              <input type="number" id="sleep-brightness" min="1" max="100" step="1" />
-            </label>
-            <label>
-              Color temp (K)
-              <input type="number" id="sleep-ct" min="1500" max="8000" step="10" />
-            </label>
-            <label>
-              Color hue
-              <input type="number" id="sleep-hue" min="0" max="360" step="1" />
-            </label>
-            <label>
-              Color saturation
-              <input type="number" id="sleep-sat" min="0" max="100" step="1" />
-            </label>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>Tolerances</span>
+            </div>
+            <div class="weather-grid">
+              <label>
+                Brightness (+/-)
+                <input type="number" id="retry-tol-brightness" min="0" max="10" step="1" />
+              </label>
+              <label>
+                Color temp (K +/-)
+                <input type="number" id="retry-tol-ct" min="0" max="500" step="1" />
+              </label>
+              <label>
+                HS (deg/% +/-)
+                <input type="number" id="retry-tol-hs" min="0" max="30" step="0.1" />
+              </label>
+              <label>
+                RGB (0-255 +/-)
+                <input type="number" id="retry-tol-rgb" min="0" max="20" step="1" />
+              </label>
+              <label>
+                XY (+/-)
+                <input type="number" id="retry-tol-xy" min="0" max="0.2" step="0.001" />
+              </label>
+            </div>
           </div>
         </div>
       </section>
@@ -183,7 +273,7 @@
             <p class="section-hint">Assemble inputs into a virtual output entity.</p>
           </div>
           <div class="controller-actions">
-            <button id="toggle-master" class="ghost">Master Curves</button>
+            <button id="toggle-master" class="ghost">Master Settings</button>
             <button id="add-btn" class="primary">Add Controller</button>
           </div>
         </div>
@@ -362,6 +452,25 @@
               </label>
             </div>
           </div>
+          <div class="weather-panel">
+            <div class="curve-header">
+              <span>WakeUp Mode</span>
+            </div>
+            <div class="weather-grid">
+              <label class="toggle-row curve-toggle">
+                <input type="checkbox" id="wakeup-use-master" checked />
+                Use master wakeup settings
+              </label>
+              <label>
+                Duration (minutes)
+                <input type="number" id="wakeup-duration-override" min="1" max="240" step="1" />
+              </label>
+              <label>
+                Start brightness (%)
+                <input type="number" id="wakeup-start-brightness-override" min="1" max="100" step="1" />
+              </label>
+            </div>
+          </div>
           <label>
             Input Lights
             <input type="text" id="light-search" placeholder="Search lights..." />
@@ -377,7 +486,7 @@
     </main>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20260121-4"></script>
 </body>
 </html>
 

@@ -20,7 +20,8 @@
     "mqtt_username": "",
     "mqtt_password": "",
     "log_level": "info",
-    "circadian_interval": 60
+    "circadian_interval": 60,
+    "wakeup_interval": 2
   },
   "schema": {
     "mqtt_host": "str",
@@ -28,6 +29,7 @@
     "mqtt_username": "str?",
     "mqtt_password": "password?",
     "log_level": "list(trace|debug|info|warning|error)",
-    "circadian_interval": "int(1,3600)"
+    "circadian_interval": "int(1,3600)",
+    "wakeup_interval": "int(1,3600)"
   }
 }

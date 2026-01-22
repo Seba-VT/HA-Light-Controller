@@ -37,6 +37,7 @@ const masterColorTempCanvas = document.getElementById("master-curve-color-temp")
 const masterSolarBrightnessToggle = document.getElementById("master-solar-brightness");
 const masterSolarColorToggle = document.getElementById("master-solar-color-temp");
 const circadianIntervalInput = document.getElementById("circadian-interval");
+const wakeupIntervalInput = document.getElementById("wakeup-interval");
 const weatherEnabledToggle = document.getElementById("weather-enabled");
 const weatherCloudInput = document.getElementById("weather-cloud-sensor");
 const weatherUvInput = document.getElementById("weather-uv-sensor");
@@ -56,11 +57,24 @@ const sleepBrightnessInput = document.getElementById("sleep-brightness");
 const sleepCtInput = document.getElementById("sleep-ct");
 const sleepHueInput = document.getElementById("sleep-hue");
 const sleepSatInput = document.getElementById("sleep-sat");
+const wakeupDurationInput = document.getElementById("wakeup-duration");
+const wakeupStartBrightnessInput = document.getElementById("wakeup-start-brightness");
+const retryEnabledToggle = document.getElementById("retry-enabled");
+const retryDelayInput = document.getElementById("retry-delay");
+const retryMaxInput = document.getElementById("retry-max");
+const retryTolBrightnessInput = document.getElementById("retry-tol-brightness");
+const retryTolCtInput = document.getElementById("retry-tol-ct");
+const retryTolHsInput = document.getElementById("retry-tol-hs");
+const retryTolRgbInput = document.getElementById("retry-tol-rgb");
+const retryTolXyInput = document.getElementById("retry-tol-xy");
 const sleepUseMasterToggle = document.getElementById("sleep-use-master");
 const sleepBrightnessOverrideInput = document.getElementById("sleep-brightness-override");
 const sleepCtOverrideInput = document.getElementById("sleep-ct-override");
 const sleepHueOverrideInput = document.getElementById("sleep-hue-override");
 const sleepSatOverrideInput = document.getElementById("sleep-sat-override");
+const wakeupUseMasterToggle = document.getElementById("wakeup-use-master");
+const wakeupDurationOverrideInput = document.getElementById("wakeup-duration-override");
+const wakeupStartBrightnessOverrideInput = document.getElementById("wakeup-start-brightness-override");
 const solarBrightnessToggle = document.getElementById("solar-brightness");
 const solarColorToggle = document.getElementById("solar-color-temp");
 const brightnessMinInput = document.getElementById("brightness-min");
@@ -172,13 +186,23 @@ async function loadData() {
   if (circadianIntervalInput) {
     try {
       const runtime = await fetchJson("api/runtime");
-      circadianIntervalInput.value = runtime.circadian_interval;
-      graphRefreshSeconds = Number.isFinite(runtime.circadian_interval)
-        ? Math.max(1, runtime.circadian_interval)
-        : graphRefreshSeconds;
+      if (circadianIntervalInput) {
+        circadianIntervalInput.value = runtime.circadian_interval;
+        graphRefreshSeconds = Number.isFinite(runtime.circadian_interval)
+          ? Math.max(1, runtime.circadian_interval)
+          : graphRefreshSeconds;
+      }
+      if (wakeupIntervalInput) {
+        wakeupIntervalInput.value = runtime.wakeup_interval ?? 2;
+      }
     } catch (err) {
-      circadianIntervalInput.value = 60;
-      graphRefreshSeconds = 60;
+      if (circadianIntervalInput) {
+        circadianIntervalInput.value = 60;
+        graphRefreshSeconds = 60;
+      }
+      if (wakeupIntervalInput) {
+        wakeupIntervalInput.value = 2;
+      }
     }
   }
   state.master = normalizeMaster(config.master);
@@ -248,6 +272,36 @@ async function loadData() {
   }
   if (sleepSatInput) {
     sleepSatInput.value = state.master.sleep?.hs_color?.[1] ?? 70;
+  }
+  if (wakeupDurationInput) {
+    wakeupDurationInput.value = state.master.wakeup?.duration_minutes ?? 30;
+  }
+  if (wakeupStartBrightnessInput) {
+    wakeupStartBrightnessInput.value = state.master.wakeup?.start_brightness_pct ?? 1;
+  }
+  if (retryEnabledToggle) {
+    retryEnabledToggle.checked = state.master.retry?.enabled !== false;
+  }
+  if (retryDelayInput) {
+    retryDelayInput.value = state.master.retry?.delay_seconds ?? 2;
+  }
+  if (retryMaxInput) {
+    retryMaxInput.value = state.master.retry?.max_retries ?? 3;
+  }
+  if (retryTolBrightnessInput) {
+    retryTolBrightnessInput.value = state.master.retry?.tolerance_brightness ?? 2;
+  }
+  if (retryTolCtInput) {
+    retryTolCtInput.value = state.master.retry?.tolerance_ct_k ?? 25;
+  }
+  if (retryTolHsInput) {
+    retryTolHsInput.value = state.master.retry?.tolerance_hs ?? 3;
+  }
+  if (retryTolRgbInput) {
+    retryTolRgbInput.value = state.master.retry?.tolerance_rgb ?? 3;
+  }
+  if (retryTolXyInput) {
+    retryTolXyInput.value = state.master.retry?.tolerance_xy ?? 0.01;
   }
   updateMasterOverlays();
   renderControllers();
@@ -967,8 +1021,20 @@ function openEditor(index) {
   if (sleepSatOverrideInput) {
     sleepSatOverrideInput.value = sleepBase?.hs_color?.[1] ?? state.master.sleep?.hs_color?.[1] ?? 70;
   }
+  const wakeupCfg = controller && typeof controller.wakeup === "object" ? controller.wakeup : {};
+  if (wakeupUseMasterToggle) {
+    wakeupUseMasterToggle.checked = wakeupCfg?.use_master !== false;
+  }
+  const wakeupBase = wakeupCfg?.use_master === false ? wakeupCfg : state.master?.wakeup || {};
+  if (wakeupDurationOverrideInput) {
+    wakeupDurationOverrideInput.value = wakeupBase?.duration_minutes ?? state.master.wakeup?.duration_minutes ?? 30;
+  }
+  if (wakeupStartBrightnessOverrideInput) {
+    wakeupStartBrightnessOverrideInput.value = wakeupBase?.start_brightness_pct ?? state.master.wakeup?.start_brightness_pct ?? 1;
+  }
   toggleCircadianFields();
   updateSleepOverrides();
+  updateWakeupOverrides();
   editorCustomBrightness = (circadian.brightness_curve || curveDefaults.brightness).map((point) => ({ ...point }));
   editorCustomColorTemp = (circadian.color_temp_curve || curveDefaults.color_temp).map((point) => ({ ...point }));
   editorBrightnessEnabled = circadian.brightness_enabled !== false;
@@ -1035,6 +1101,15 @@ function closeEditor() {
   }
   if (sleepSatOverrideInput) {
     sleepSatOverrideInput.value = "";
+  }
+  if (wakeupUseMasterToggle) {
+    wakeupUseMasterToggle.checked = true;
+  }
+  if (wakeupDurationOverrideInput) {
+    wakeupDurationOverrideInput.value = "";
+  }
+  if (wakeupStartBrightnessOverrideInput) {
+    wakeupStartBrightnessOverrideInput.value = "";
   }
   toggleCircadianFields();
   applyLimitInputs(limitDefaults);
@@ -1136,6 +1211,27 @@ function updateSleepOverrides() {
     }
     if (sleepSatOverrideInput) {
       sleepSatOverrideInput.value = state.master.sleep?.hs_color?.[1] ?? 70;
+    }
+  }
+}
+
+function updateWakeupOverrides() {
+  if (!wakeupUseMasterToggle) {
+    return;
+  }
+  const useMaster = wakeupUseMasterToggle.checked;
+  if (wakeupDurationOverrideInput) {
+    wakeupDurationOverrideInput.disabled = useMaster;
+  }
+  if (wakeupStartBrightnessOverrideInput) {
+    wakeupStartBrightnessOverrideInput.disabled = useMaster;
+  }
+  if (useMaster) {
+    if (wakeupDurationOverrideInput) {
+      wakeupDurationOverrideInput.value = state.master.wakeup?.duration_minutes ?? 30;
+    }
+    if (wakeupStartBrightnessOverrideInput) {
+      wakeupStartBrightnessOverrideInput.value = state.master.wakeup?.start_brightness_pct ?? 1;
     }
   }
 }
@@ -1388,6 +1484,20 @@ function normalizeMaster(master) {
         color_temp_kelvin: 2200,
         hs_color: [30, 70],
       },
+      wakeup: {
+        duration_minutes: 30,
+        start_brightness_pct: 1,
+      },
+      retry: {
+        enabled: true,
+        delay_seconds: 2,
+        max_retries: 3,
+        tolerance_brightness: 2,
+        tolerance_ct_k: 25,
+        tolerance_hs: 3,
+        tolerance_rgb: 3,
+        tolerance_xy: 0.01,
+      },
     };
   }
   return {
@@ -1419,6 +1529,20 @@ function normalizeMaster(master) {
       brightness_pct: Number.isFinite(master.sleep?.brightness_pct) ? master.sleep.brightness_pct : 10,
       color_temp_kelvin: Number.isFinite(master.sleep?.color_temp_kelvin) ? master.sleep.color_temp_kelvin : 2200,
       hs_color: Array.isArray(master.sleep?.hs_color) ? master.sleep.hs_color.slice(0, 2) : [30, 70],
+    },
+    wakeup: {
+      duration_minutes: Number.isFinite(master.wakeup?.duration_minutes) ? master.wakeup.duration_minutes : 30,
+      start_brightness_pct: Number.isFinite(master.wakeup?.start_brightness_pct) ? master.wakeup.start_brightness_pct : 1,
+    },
+    retry: {
+      enabled: master.retry?.enabled !== false,
+      delay_seconds: Number.isFinite(master.retry?.delay_seconds) ? master.retry.delay_seconds : 2,
+      max_retries: Number.isFinite(master.retry?.max_retries) ? master.retry.max_retries : 3,
+      tolerance_brightness: Number.isFinite(master.retry?.tolerance_brightness) ? master.retry.tolerance_brightness : 2,
+      tolerance_ct_k: Number.isFinite(master.retry?.tolerance_ct_k) ? master.retry.tolerance_ct_k : 25,
+      tolerance_hs: Number.isFinite(master.retry?.tolerance_hs) ? master.retry.tolerance_hs : 3,
+      tolerance_rgb: Number.isFinite(master.retry?.tolerance_rgb) ? master.retry.tolerance_rgb : 3,
+      tolerance_xy: Number.isFinite(master.retry?.tolerance_xy) ? master.retry.tolerance_xy : 0.01,
     },
   };
 }
@@ -1790,6 +1914,9 @@ if (circadianToggle) {
 if (sleepUseMasterToggle) {
   sleepUseMasterToggle.addEventListener("change", updateSleepOverrides);
 }
+if (wakeupUseMasterToggle) {
+  wakeupUseMasterToggle.addEventListener("change", updateWakeupOverrides);
+}
 if (solarBrightnessToggle) {
   solarBrightnessToggle.addEventListener("change", updateCurveOverlays);
 }
@@ -1836,6 +1963,20 @@ if (saveMasterBtn) {
         parseFloatOr(sleepHueInput?.value, 30),
         parseFloatOr(sleepSatInput?.value, 70),
       ],
+    };
+    state.master.wakeup = {
+      duration_minutes: parseIntOr(wakeupDurationInput?.value, 30),
+      start_brightness_pct: parseIntOr(wakeupStartBrightnessInput?.value, 1),
+    };
+    state.master.retry = {
+      enabled: retryEnabledToggle ? retryEnabledToggle.checked : true,
+      delay_seconds: parseIntOr(retryDelayInput?.value, 2),
+      max_retries: parseIntOr(retryMaxInput?.value, 3),
+      tolerance_brightness: parseIntOr(retryTolBrightnessInput?.value, 2),
+      tolerance_ct_k: parseIntOr(retryTolCtInput?.value, 25),
+      tolerance_hs: parseFloatOr(retryTolHsInput?.value, 3),
+      tolerance_rgb: parseIntOr(retryTolRgbInput?.value, 3),
+      tolerance_xy: parseFloatOr(retryTolXyInput?.value, 0.01),
     };
     state.master.away = {
       start_minutes: parseTimeToMinutes(awayStartInput?.value, 360),
@@ -1932,22 +2073,17 @@ if (weatherMinInput) {
 }
 if (circadianIntervalInput) {
   circadianIntervalInput.addEventListener("change", async () => {
+    await saveRuntimeIntervals();
     const value = Number.parseInt(circadianIntervalInput.value, 10);
-    if (!Number.isFinite(value) || value < 1 || value > 3600) {
-      circadianIntervalInput.value = 60;
-      return;
-    }
-    try {
-      await fetch("api/runtime", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ circadian_interval: value }),
-      });
+    if (Number.isFinite(value)) {
       graphRefreshSeconds = value;
       updateGraphRefreshTimer();
-    } catch (err) {
-      // No-op; UI will keep the last valid value.
     }
+  });
+}
+if (wakeupIntervalInput) {
+  wakeupIntervalInput.addEventListener("change", async () => {
+    await saveRuntimeIntervals();
   });
 }
 
@@ -1974,6 +2110,7 @@ form.addEventListener("submit", async (event) => {
   const useMasterBrightness = useMasterBrightnessToggle ? useMasterBrightnessToggle.checked : false;
   const useMasterColor = useMasterColorToggle ? useMasterColorToggle.checked : false;
   const sleepUseMaster = sleepUseMasterToggle ? sleepUseMasterToggle.checked : true;
+  const wakeupUseMaster = wakeupUseMasterToggle ? wakeupUseMasterToggle.checked : true;
   const sleepPayload = {
     use_master: sleepUseMaster,
   };
@@ -1985,6 +2122,13 @@ form.addEventListener("submit", async (event) => {
       clampValue(parseFloatOr(sleepSatOverrideInput?.value, 70), 0, 100),
     ];
   }
+  const wakeupPayload = {
+    use_master: wakeupUseMaster,
+  };
+  if (!wakeupUseMaster) {
+    wakeupPayload.duration_minutes = clampValue(parseIntOr(wakeupDurationOverrideInput?.value, 30), 1, 240);
+    wakeupPayload.start_brightness_pct = clampValue(parseIntOr(wakeupStartBrightnessOverrideInput?.value, 1), 1, 100);
+  }
   const payload = {
     name,
     unique_id: uniqueId || name,
@@ -1993,6 +2137,7 @@ form.addEventListener("submit", async (event) => {
     weather_enabled: weatherEnabledToggle ? weatherEnabledToggle.checked : false,
     limits: readLimitInputs(),
     sleep: sleepPayload,
+    wakeup: wakeupPayload,
     circadian: {
       enabled: circadianToggle ? circadianToggle.checked : false,
       use_master_brightness: useMasterBrightness,
@@ -2060,6 +2205,35 @@ function updateGraphRefreshTimer() {
       updateCurveOverlays();
     }
   }, graphRefreshSeconds * 1000);
+}
+
+async function saveRuntimeIntervals() {
+  const circadianValue = Number.parseInt(circadianIntervalInput?.value ?? "60", 10);
+  const wakeupValue = Number.parseInt(wakeupIntervalInput?.value ?? "2", 10);
+  if (!Number.isFinite(circadianValue) || circadianValue < 1 || circadianValue > 3600) {
+    if (circadianIntervalInput) {
+      circadianIntervalInput.value = 60;
+    }
+    return;
+  }
+  if (!Number.isFinite(wakeupValue) || wakeupValue < 1 || wakeupValue > 3600) {
+    if (wakeupIntervalInput) {
+      wakeupIntervalInput.value = 2;
+    }
+    return;
+  }
+  try {
+    await fetch("api/runtime", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        circadian_interval: circadianValue,
+        wakeup_interval: wakeupValue,
+      }),
+    });
+  } catch (err) {
+    // No-op; UI will keep the last valid value.
+  }
 }
 
 if (lightSearch) {

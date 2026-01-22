@@ -594,6 +594,26 @@ input[type="text"]::placeholder {
   background: rgba(13, 16, 22, 0.7);
 }
 
+.settings-group {
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(10, 13, 18, 0.82);
+}
+
+.settings-group:first-of-type {
+  margin-top: 0;
+}
+
+.settings-group-title {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 10px;
+}
+
 .weather-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
