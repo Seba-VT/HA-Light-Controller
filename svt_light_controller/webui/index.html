@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -7,7 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=20260121-4" />
+  <link rel="stylesheet" href="vendor/tabulator/tabulator.min.css" />
+  <link rel="stylesheet" href="style.css?v=20260122-12" />
 </head>
 <body class="theme-industrial">
   <div class="grid-overlay" aria-hidden="true"></div>
@@ -16,19 +17,8 @@
   <div class="app">
     <header class="hero">
       <div>
-        <p class="eyebrow">Industrial control</p>
         <h1>SVT Light Controller</h1>
         <p class="subhead">Route groups of lights into a single, high-signal controller output.</p>
-      </div>
-      <div class="hero-meta">
-        <div class="meta-card">
-          <span class="meta-label">Transport</span>
-          <span class="meta-value">MQTT / HA</span>
-        </div>
-        <div class="meta-card">
-          <span class="meta-label">Profile</span>
-          <span class="meta-value">SVTLC</span>
-        </div>
       </div>
     </header>
 
@@ -119,6 +109,18 @@
               <label>
                 Max CT reduction (%)
                 <input type="number" id="weather-max-reduction" min="0" max="100" step="1" />
+              </label>
+              <label>
+                Cloud weight
+                <input type="number" id="weather-cloud-weight" min="0" max="1" step="0.01" />
+              </label>
+              <label>
+                UV weight
+                <input type="number" id="weather-uv-weight" min="0" max="1" step="0.01" />
+              </label>
+              <label>
+                Visibility weight
+                <input type="number" id="weather-visibility-weight" min="0" max="1" step="0.01" />
               </label>
             </div>
           </div>
@@ -277,16 +279,15 @@
             <button id="add-btn" class="primary">Add Controller</button>
           </div>
         </div>
-        <div class="controller-toolbar">
-          <div class="toolbar-row">
-            <input type="search" id="controller-search" placeholder="Search name, ID, tags, lights" />
-            <input type="text" id="controller-tags" placeholder="Tags (comma)" />
-            <select id="controller-sort">
-              <option value="name">Sort: Name</option>
-              <option value="id">Sort: ID</option>
-              <option value="inputs">Sort: Inputs</option>
-            </select>
-          </div>
+          <div class="controller-toolbar">
+            <div class="toolbar-row">
+              <input type="search" id="controller-search" placeholder="Search name, ID, lights" />
+              <select id="controller-sort">
+                <option value="name">Sort: Name</option>
+                <option value="id">Sort: ID</option>
+                <option value="inputs">Sort: Inputs</option>
+              </select>
+            </div>
           <div class="toolbar-filters">
             <label class="filter-pill">
               <input type="checkbox" id="filter-circadian" />
@@ -319,7 +320,9 @@
             <button type="button" data-bulk="solar_color_off">Solar color off</button>
           </div>
         </div>
-        <div id="controller-list" class="card-stack"></div>
+        <div class="controller-table-wrap">
+          <div id="controller-table"></div>
+        </div>
       </section>
 
       <section id="editor" class="panel hidden">
@@ -331,151 +334,180 @@
           <span class="badge">SVTLC</span>
         </div>
         <form id="controller-form">
-          <label>
-            Name
-            <input type="text" id="name" required placeholder="Living Room Group" />
-          </label>
-          <label>
-            Unique ID (optional)
-            <input type="text" id="unique_id" placeholder="living_room" />
-          </label>
-          <label>
-            Tags (comma separated)
-            <input type="text" id="tags" placeholder="kitchen, floor-1, led" />
-          </label>
-          <div class="circadian-toggle">
-            <label class="toggle-row">
-              <input type="checkbox" id="circadian-enabled" />
-              Enable circadian cycle
+          <div class="settings-group">
+            <div class="settings-group-title">Details</div>
+            <label>
+              Name
+              <input type="text" id="name" required placeholder="Living Room Group" />
+            </label>
+            <label>
+              Unique ID (optional)
+              <input type="text" id="unique_id" placeholder="living_room" />
             </label>
           </div>
-          <div class="circadian-toggle">
-            <label class="toggle-row">
-              <input type="checkbox" id="use-master-brightness" />
-              Use master brightness curve
-            </label>
-            <label class="toggle-row">
-              <input type="checkbox" id="use-master-color-temp" />
-              Use master color temperature curve
-            </label>
-          </div>
-          <div id="circadian-fields" class="circadian-fields">
-            <div class="curve-panel">
-            <div class="curve-header">
-              <span>Brightness curve</span>
-              <div class="curve-controls">
-                <label class="toggle-row curve-toggle">
-                  <input type="checkbox" id="solar-brightness" checked />
-                  Solar shift
-                </label>
-                  <span class="curve-scale">%</span>
-                </div>
-              </div>
-              <canvas id="curve-brightness" class="curve-canvas" width="460" height="160"></canvas>
+
+          <div class="settings-group">
+            <div class="settings-group-title">Circadian</div>
+            <div class="circadian-toggle">
+              <label class="toggle-row">
+                <input type="checkbox" id="circadian-enabled" />
+                Enable circadian cycle
+              </label>
             </div>
-            <div class="curve-panel">
+            <div class="circadian-toggle">
+              <label class="toggle-row">
+                <input type="checkbox" id="use-master-brightness" />
+                Use master brightness curve
+              </label>
+              <label class="toggle-row">
+                <input type="checkbox" id="use-master-color-temp" />
+                Use master color temperature curve
+              </label>
+            </div>
+            <div id="circadian-fields" class="circadian-fields">
+              <div class="curve-panel">
               <div class="curve-header">
-                <span>Color temperature curve</span>
+                <span>Brightness curve</span>
                 <div class="curve-controls">
                   <label class="toggle-row curve-toggle">
-                    <input type="checkbox" id="solar-color-temp" checked />
+                    <input type="checkbox" id="solar-brightness" checked />
                     Solar shift
                   </label>
-                  <span class="curve-scale">Kelvin</span>
+                    <span class="curve-scale">%</span>
+                  </div>
                 </div>
+                <canvas id="curve-brightness" class="curve-canvas" width="460" height="160"></canvas>
               </div>
-              <canvas id="curve-color-temp" class="curve-canvas" width="460" height="160"></canvas>
-            </div>
-            <p class="curve-hint">Click to add points, drag to move, double-click to delete.</p>
-            <div class="limit-panel">
-              <div class="limit-block">
-                <div class="limit-header">Brightness limits</div>
+              <div class="curve-panel">
+                <div class="curve-header">
+                  <span>Color temperature curve</span>
+                  <div class="curve-controls">
+                    <label class="toggle-row curve-toggle">
+                      <input type="checkbox" id="solar-color-temp" checked />
+                      Solar shift
+                    </label>
+                    <span class="curve-scale">Kelvin</span>
+                  </div>
+                </div>
+                <canvas id="curve-color-temp" class="curve-canvas" width="460" height="160"></canvas>
+              </div>
+              <p class="curve-hint">Click to add points, drag to move, double-click to delete.</p>
+              <div class="limit-panel">
+                <div class="limit-block">
+                  <div class="limit-header">Brightness limits</div>
+                  <div class="limit-row">
+                    <label for="brightness-min">Min %</label>
+                    <input type="range" id="brightness-min" min="1" max="100" step="1" value="1" />
+                    <span id="brightness-min-value" class="limit-value">1%</span>
+                  </div>
+                  <div class="limit-row">
+                    <label for="brightness-max">Max %</label>
+                    <input type="range" id="brightness-max" min="1" max="100" step="1" value="100" />
+                    <span id="brightness-max-value" class="limit-value">100%</span>
+                  </div>
+                </div>
+                <div class="limit-block">
+                  <div class="limit-header">Color temperature limits</div>
                 <div class="limit-row">
-                  <label for="brightness-min">Min %</label>
-                  <input type="range" id="brightness-min" min="1" max="100" step="1" value="1" />
-                  <span id="brightness-min-value" class="limit-value">1%</span>
+                  <label for="ct-min">Min K</label>
+                  <input type="range" id="ct-min" min="1500" max="8000" step="10" value="2000" />
+                  <span id="ct-min-value" class="limit-value">2000K</span>
                 </div>
                 <div class="limit-row">
-                  <label for="brightness-max">Max %</label>
-                  <input type="range" id="brightness-max" min="1" max="100" step="1" value="100" />
-                  <span id="brightness-max-value" class="limit-value">100%</span>
+                  <label for="ct-max">Max K</label>
+                  <input type="range" id="ct-max" min="1500" max="8000" step="10" value="6500" />
+                  <span id="ct-max-value" class="limit-value">6500K</span>
+                </div>
+                <label class="toggle-row">
+                  <input type="checkbox" id="weather-enabled" />
+                  Enable weather-based CT
+                </label>
+                <div class="limit-row">
+                  <label for="weather-min">Weather min K</label>
+                  <input type="range" id="weather-min" min="1500" max="8000" step="10" value="2300" />
+                  <span id="weather-min-value" class="limit-value">2300K</span>
                 </div>
               </div>
-              <div class="limit-block">
-                <div class="limit-header">Color temperature limits</div>
-              <div class="limit-row">
-                <label for="ct-min">Min K</label>
-                <input type="range" id="ct-min" min="1500" max="8000" step="10" value="2000" />
-                <span id="ct-min-value" class="limit-value">2000K</span>
-              </div>
-              <div class="limit-row">
-                <label for="ct-max">Max K</label>
-                <input type="range" id="ct-max" min="1500" max="8000" step="10" value="6500" />
-                <span id="ct-max-value" class="limit-value">6500K</span>
-              </div>
-              <label class="toggle-row">
-                <input type="checkbox" id="weather-enabled" />
-                Enable weather-based CT
-              </label>
-              <div class="limit-row">
-                <label for="weather-min">Weather min K</label>
-                <input type="range" id="weather-min" min="1500" max="8000" step="10" value="2300" />
-                <span id="weather-min-value" class="limit-value">2300K</span>
               </div>
             </div>
+          </div>
+
+          <div class="settings-group">
+            <div class="settings-group-title">Modes</div>
+            <div class="weather-panel">
+              <div class="curve-header">
+                <span>Sleep Mode</span>
+              </div>
+              <div class="weather-grid">
+                <label class="toggle-row curve-toggle">
+                  <input type="checkbox" id="sleep-use-master" checked />
+                  Use master sleep settings
+                </label>
+                <label>
+                  Brightness (%)
+                  <input type="number" id="sleep-brightness-override" min="1" max="100" step="1" />
+                </label>
+                <label>
+                  Color temp (K)
+                  <input type="number" id="sleep-ct-override" min="1500" max="8000" step="10" />
+                </label>
+                <label>
+                  Color hue
+                  <input type="number" id="sleep-hue-override" min="0" max="360" step="1" />
+                </label>
+                <label>
+                  Color saturation
+                  <input type="number" id="sleep-sat-override" min="0" max="100" step="1" />
+                </label>
+              </div>
+            </div>
+            <div class="weather-panel">
+              <div class="curve-header">
+                <span>WakeUp Mode</span>
+              </div>
+              <div class="weather-grid">
+                <label class="toggle-row curve-toggle">
+                  <input type="checkbox" id="wakeup-use-master" checked />
+                  Use master wakeup settings
+                </label>
+                <label>
+                  Duration (minutes)
+                  <input type="number" id="wakeup-duration-override" min="1" max="240" step="1" />
+                </label>
+                <label>
+                  Start brightness (%)
+                  <input type="number" id="wakeup-start-brightness-override" min="1" max="100" step="1" />
+                </label>
+              </div>
             </div>
           </div>
-          <div class="weather-panel">
-            <div class="curve-header">
-              <span>Sleep Mode</span>
-            </div>
-            <div class="weather-grid">
-              <label class="toggle-row curve-toggle">
-                <input type="checkbox" id="sleep-use-master" checked />
-                Use master sleep settings
-              </label>
-              <label>
-                Brightness (%)
-                <input type="number" id="sleep-brightness-override" min="1" max="100" step="1" />
-              </label>
-              <label>
-                Color temp (K)
-                <input type="number" id="sleep-ct-override" min="1500" max="8000" step="10" />
-              </label>
-              <label>
-                Color hue
-                <input type="number" id="sleep-hue-override" min="0" max="360" step="1" />
-              </label>
-              <label>
-                Color saturation
-                <input type="number" id="sleep-sat-override" min="0" max="100" step="1" />
-              </label>
-            </div>
-          </div>
-          <div class="weather-panel">
-            <div class="curve-header">
-              <span>WakeUp Mode</span>
-            </div>
-            <div class="weather-grid">
-              <label class="toggle-row curve-toggle">
-                <input type="checkbox" id="wakeup-use-master" checked />
-                Use master wakeup settings
-              </label>
-              <label>
-                Duration (minutes)
-                <input type="number" id="wakeup-duration-override" min="1" max="240" step="1" />
-              </label>
-              <label>
-                Start brightness (%)
-                <input type="number" id="wakeup-start-brightness-override" min="1" max="100" step="1" />
-              </label>
+
+          <div class="settings-group">
+            <div class="settings-group-title">Inputs</div>
+            <div class="dual-list">
+              <div class="light-pane">
+                <div class="light-pane-header">
+                  <span>Available</span>
+                  <span id="available-count" class="badge">0</span>
+                </div>
+                <input type="text" id="light-search" placeholder="Search lights..." />
+                <div id="available-list" class="light-list"></div>
+              </div>
+              <div class="light-actions">
+                <button type="button" id="add-selected" class="ghost">Add -></button>
+                <button type="button" id="add-all" class="ghost">Add all</button>
+                <button type="button" id="remove-selected" class="ghost"><- Remove</button>
+                <button type="button" id="remove-all" class="ghost">Clear</button>
+              </div>
+              <div class="light-pane">
+                <div class="light-pane-header">
+                  <span>Selected</span>
+                  <span id="selected-count" class="badge">0</span>
+                </div>
+                <div id="selected-list" class="light-list"></div>
+              </div>
             </div>
           </div>
-          <label>
-            Input Lights
-            <input type="text" id="light-search" placeholder="Search lights..." />
-            <div id="light-list" class="light-list"></div>
-          </label>
           <div class="form-actions">
             <button type="submit" class="primary">Save</button>
             <button type="button" id="cancel-btn" class="ghost">Cancel</button>
@@ -486,8 +518,11 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260121-4"></script>
+  <script src="vendor/tabulator/tabulator.min.js"></script>
+  <script src="app.js?v=20260122-11"></script>
 </body>
 </html>
+
+
 
 

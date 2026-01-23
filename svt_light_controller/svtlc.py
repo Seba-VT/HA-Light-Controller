@@ -443,6 +443,11 @@ def _normalize_weather_config(master: dict) -> dict:
     weather = master.get("weather") if isinstance(master, dict) else {}
     if not isinstance(weather, dict):
         weather = {}
+    def _weight(value: object, fallback: float) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return fallback
     return {
         "cloud_sensor": str(weather.get("cloud_sensor") or ""),
         "uv_sensor": str(weather.get("uv_sensor") or ""),
@@ -451,6 +456,9 @@ def _normalize_weather_config(master: dict) -> dict:
         "uv_max": max(1.0, float(weather.get("uv_max", 8))),
         "visibility_max_km": max(1.0, float(weather.get("visibility_max_km", 10))),
         "max_reduction_pct": max(0.0, min(100.0, float(weather.get("max_reduction_pct", 60)))),
+        "cloud_weight": _weight(weather.get("cloud_weight", 0.55), 0.55),
+        "uv_weight": _weight(weather.get("uv_weight", 0.3), 0.3),
+        "visibility_weight": _weight(weather.get("visibility_weight", 0.15), 0.15),
     }
 
 
@@ -827,7 +835,11 @@ def _compute_clarity(weather_values: dict, config: dict) -> tuple[float | None, 
 
     precip = code is not None and code < 800
 
-    weights = {"uv": 0.55, "cloud": 0.25, "visibility": 0.2}
+    weights = {
+        "uv": max(0.0, float(config.get("uv_weight", 0.3))),
+        "cloud": max(0.0, float(config.get("cloud_weight", 0.55))),
+        "visibility": max(0.0, float(config.get("visibility_weight", 0.15))),
+    }
     total = 0.0
     value = 0.0
 
@@ -1425,6 +1437,10 @@ def _publish_input_command(
         payload["effect"] = effect
     client.publish(output_topic, json.dumps(payload), qos=0, retain=False)
     if track:
+        # Cancel any pending retries for this controller when a new command is issued.
+        for key, entry in list(RETRY_PENDING.items()):
+            if entry.get("controller_id") == controller_id:
+                RETRY_PENDING.pop(key, None)
         _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect)
 
 
@@ -1586,6 +1602,7 @@ def main() -> None:
     last_away_state: dict[str, dict] = {}
     away_state: dict[str, dict] = {}
     away_window_cache: dict[str, dict] = {}
+    last_weather_debug: dict[str, dict] = {}
     last_sleep_state: dict[str, dict] = {}
     wakeup_state: dict[str, dict] = {}
     config_cache = {"mtime": None, "controllers": [], "master": {}}
@@ -1791,19 +1808,29 @@ def main() -> None:
                 if color_temp_enabled and isinstance(smooth_ct, int)
                 else None
             )
-            if brightness is not None or color_payload:
-                _publish_light_command(
-                    client,
-                    controller_id,
-                    states,
-                    brightness,
-                    color_payload,
-                    only_on=False,
-                )
-            else:
+            if brightness is None and color_payload is None:
                 _publish_input_command(client, controller_id, "turn_on_inputs", targets)
         elif not current_on and state_changed and targets:
             _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+        if current_on and targets:
+            brightness = smooth_brightness if brightness_enabled else None
+            color_payload = (
+                {"color_temp_kelvin": smooth_ct, "color_mode": "color_temp"}
+                if color_temp_enabled and isinstance(smooth_ct, int)
+                else None
+            )
+            if brightness is not None or color_payload:
+                last = last_circadian.get(controller_id, {})
+                if last.get("brightness") != brightness or last.get("color_temp") != smooth_ct:
+                    _publish_light_command(
+                        client,
+                        controller_id,
+                        states,
+                        brightness,
+                        color_payload,
+                        only_on=False,
+                    )
+                    last_circadian[controller_id] = {"brightness": brightness, "color_temp": smooth_ct}
 
         away_payload = {
             "active": True,
@@ -2187,6 +2214,38 @@ def main() -> None:
             weather_ct, weather_reduction_pct = _apply_weather_ct_with_reduction(raw_ct, limits, weather_payload)
             if weather_reduction_pct is not None:
                 weather_reduction_pct = float(weather_reduction_pct)
+            debug_weather_min = limits.get("weather_min_kelvin")
+            if not isinstance(debug_weather_min, int):
+                debug_weather_min = limits.get("ct_min_kelvin")
+            if isinstance(debug_weather_min, int):
+                debug_weather_min = max(
+                    limits.get("ct_min_kelvin", debug_weather_min),
+                    min(limits.get("ct_max_kelvin", debug_weather_min), debug_weather_min),
+                )
+            debug_payload = {
+                "weather_values": weather_values,
+                "clarity": clarity,
+                "precip": precip,
+                "max_reduction_pct": weather_cfg.get("max_reduction_pct", 0.0),
+                "cloud_weight": weather_cfg.get("cloud_weight"),
+                "uv_weight": weather_cfg.get("uv_weight"),
+                "visibility_weight": weather_cfg.get("visibility_weight"),
+                "ct_min_kelvin": limits.get("ct_min_kelvin"),
+                "ct_max_kelvin": limits.get("ct_max_kelvin"),
+                "weather_min_kelvin": debug_weather_min,
+                "raw_ct": raw_ct,
+                "weather_ct": weather_ct,
+                "weather_reduction_pct": weather_reduction_pct,
+            }
+            last_debug = last_weather_debug.get(controller_id)
+            now_ts = time.time()
+            if (
+                last_debug is None
+                or last_debug.get("payload") != debug_payload
+                or now_ts - float(last_debug.get("ts", 0.0)) > 300
+            ):
+                last_weather_debug[controller_id] = {"ts": now_ts, "payload": debug_payload}
+                logger.info("WeatherCalc %s %s", controller_id, json.dumps(debug_payload, sort_keys=True))
 
         if apply_smoothing:
             smooth_brightness, smooth_ct = _smooth_targets(

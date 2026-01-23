@@ -9,8 +9,9 @@ const state = {
   pageSize: 20,
   timeOffsetMinutes: 0,
 };
+let currentSelectedLights = [];
 
-const controllerList = document.getElementById("controller-list");
+const controllerTable = document.getElementById("controller-table");
 const editor = document.getElementById("editor");
 const editorTitle = document.getElementById("editor-title");
 const form = document.getElementById("controller-form");
@@ -22,9 +23,6 @@ const toggleMasterBtn = document.getElementById("toggle-master");
 const hideMasterBtn = document.getElementById("hide-master");
 const nameInput = document.getElementById("name");
 const uniqueInput = document.getElementById("unique_id");
-const tagsInput = document.getElementById("tags");
-const lightList = document.getElementById("light-list");
-const lightSearch = document.getElementById("light-search");
 const errorText = document.getElementById("form-error");
 const circadianToggle = document.getElementById("circadian-enabled");
 const useMasterBrightnessToggle = document.getElementById("use-master-brightness");
@@ -46,6 +44,9 @@ const weatherCodeInput = document.getElementById("weather-code-sensor");
 const weatherUvMaxInput = document.getElementById("weather-uv-max");
 const weatherVisibilityMaxInput = document.getElementById("weather-visibility-max");
 const weatherMaxReductionInput = document.getElementById("weather-max-reduction");
+const weatherCloudWeightInput = document.getElementById("weather-cloud-weight");
+const weatherUvWeightInput = document.getElementById("weather-uv-weight");
+const weatherVisibilityWeightInput = document.getElementById("weather-visibility-weight");
 const smoothBrightnessRateInput = document.getElementById("smooth-brightness-rate");
 const smoothCtRateInput = document.getElementById("smooth-ct-rate");
 const awayStartInput = document.getElementById("away-start");
@@ -87,8 +88,12 @@ const ctMinValue = document.getElementById("ct-min-value");
 const ctMaxValue = document.getElementById("ct-max-value");
 const weatherMinInput = document.getElementById("weather-min");
 const weatherMinValue = document.getElementById("weather-min-value");
+const lightSearch = document.getElementById("light-search");
+const addSelectedBtn = document.getElementById("add-selected");
+const removeSelectedBtn = document.getElementById("remove-selected");
+const addAllBtn = document.getElementById("add-all");
+const removeAllBtn = document.getElementById("remove-all");
 const controllerSearch = document.getElementById("controller-search");
-const controllerTagsFilter = document.getElementById("controller-tags");
 const controllerSort = document.getElementById("controller-sort");
 const filterCircadian = document.getElementById("filter-circadian");
 const filterMasterBrightness = document.getElementById("filter-master-brightness");
@@ -149,6 +154,21 @@ const basePath = window.location.pathname.endsWith("/")
   ? window.location.pathname
   : `${window.location.pathname}/`;
 
+function coalesce(value, fallback) {
+  return value !== null && value !== undefined ? value : fallback;
+}
+
+function getPath(obj, path) {
+  let current = obj;
+  for (let i = 0; i < path.length; i += 1) {
+    if (current === null || current === undefined) {
+      return undefined;
+    }
+    current = current[path[i]];
+  }
+  return current;
+}
+
 async function fetchJson(path) {
   const target = path.startsWith("http") || path.startsWith("/") ? path : `${basePath}${path}`;
   const resp = await fetch(target);
@@ -193,7 +213,7 @@ async function loadData() {
           : graphRefreshSeconds;
       }
       if (wakeupIntervalInput) {
-        wakeupIntervalInput.value = runtime.wakeup_interval ?? 2;
+        wakeupIntervalInput.value = coalesce(runtime.wakeup_interval, 2);
       }
     } catch (err) {
       if (circadianIntervalInput) {
@@ -220,95 +240,104 @@ async function loadData() {
     masterSolarColorToggle.checked = state.master.solar_shift_color_temp;
   }
   if (weatherCloudInput) {
-    weatherCloudInput.value = state.master.weather?.cloud_sensor || "";
+    weatherCloudInput.value = getPath(state.master, ["weather", "cloud_sensor"]) || "";
   }
   if (weatherUvInput) {
-    weatherUvInput.value = state.master.weather?.uv_sensor || "";
+    weatherUvInput.value = getPath(state.master, ["weather", "uv_sensor"]) || "";
   }
   if (weatherVisibilityInput) {
-    weatherVisibilityInput.value = state.master.weather?.visibility_sensor || "";
+    weatherVisibilityInput.value = getPath(state.master, ["weather", "visibility_sensor"]) || "";
   }
   if (weatherCodeInput) {
-    weatherCodeInput.value = state.master.weather?.weather_code_sensor || "";
+    weatherCodeInput.value = getPath(state.master, ["weather", "weather_code_sensor"]) || "";
   }
   if (weatherUvMaxInput) {
-    weatherUvMaxInput.value = state.master.weather?.uv_max ?? 8;
+    weatherUvMaxInput.value = coalesce(getPath(state.master, ["weather", "uv_max"]), 8);
   }
   if (weatherVisibilityMaxInput) {
-    weatherVisibilityMaxInput.value = state.master.weather?.visibility_max_km ?? 10;
+    weatherVisibilityMaxInput.value = coalesce(getPath(state.master, ["weather", "visibility_max_km"]), 10);
   }
   if (weatherMaxReductionInput) {
-    weatherMaxReductionInput.value = state.master.weather?.max_reduction_pct ?? 60;
+    weatherMaxReductionInput.value = coalesce(getPath(state.master, ["weather", "max_reduction_pct"]), 60);
+  }
+  if (weatherCloudWeightInput) {
+    weatherCloudWeightInput.value = coalesce(getPath(state.master, ["weather", "cloud_weight"]), 0.55);
+  }
+  if (weatherUvWeightInput) {
+    weatherUvWeightInput.value = coalesce(getPath(state.master, ["weather", "uv_weight"]), 0.3);
+  }
+  if (weatherVisibilityWeightInput) {
+    weatherVisibilityWeightInput.value = coalesce(getPath(state.master, ["weather", "visibility_weight"]), 0.15);
   }
   if (smoothBrightnessRateInput) {
-    smoothBrightnessRateInput.value = state.master.smoothing?.brightness_rate_pct ?? 0.11;
+    smoothBrightnessRateInput.value = coalesce(getPath(state.master, ["smoothing", "brightness_rate_pct"]), 0.11);
   }
   if (smoothCtRateInput) {
-    smoothCtRateInput.value = state.master.smoothing?.ct_rate_k ?? 2.67;
+    smoothCtRateInput.value = coalesce(getPath(state.master, ["smoothing", "ct_rate_k"]), 2.67);
   }
   if (awayStartInput) {
-    awayStartInput.value = formatMinutesToTime(state.master.away?.start_minutes, 360);
+    awayStartInput.value = formatMinutesToTime(getPath(state.master, ["away", "start_minutes"]), 360);
   }
   if (awayEndInput) {
-    awayEndInput.value = formatMinutesToTime(state.master.away?.end_minutes, 1350);
+    awayEndInput.value = formatMinutesToTime(getPath(state.master, ["away", "end_minutes"]), 1350);
   }
   if (awayMinMinutesInput) {
-    awayMinMinutesInput.value = state.master.away?.min_minutes ?? 30;
+    awayMinMinutesInput.value = coalesce(getPath(state.master, ["away", "min_minutes"]), 30);
   }
   if (awayMaxMinutesInput) {
-    awayMaxMinutesInput.value = state.master.away?.max_minutes ?? 180;
+    awayMaxMinutesInput.value = coalesce(getPath(state.master, ["away", "max_minutes"]), 180);
   }
   if (awayOffsetMinutesInput) {
-    awayOffsetMinutesInput.value = state.master.away?.offset_minutes ?? 30;
+    awayOffsetMinutesInput.value = coalesce(getPath(state.master, ["away", "offset_minutes"]), 30);
   }
   if (sleepBrightnessInput) {
-    sleepBrightnessInput.value = state.master.sleep?.brightness_pct ?? 10;
+    sleepBrightnessInput.value = coalesce(getPath(state.master, ["sleep", "brightness_pct"]), 10);
   }
   if (sleepCtInput) {
-    sleepCtInput.value = state.master.sleep?.color_temp_kelvin ?? 2200;
+    sleepCtInput.value = coalesce(getPath(state.master, ["sleep", "color_temp_kelvin"]), 2200);
   }
   if (sleepHueInput) {
-    sleepHueInput.value = state.master.sleep?.hs_color?.[0] ?? 30;
+    sleepHueInput.value = coalesce(getPath(state.master, ["sleep", "hs_color", 0]), 30);
   }
   if (sleepSatInput) {
-    sleepSatInput.value = state.master.sleep?.hs_color?.[1] ?? 70;
+    sleepSatInput.value = coalesce(getPath(state.master, ["sleep", "hs_color", 1]), 70);
   }
   if (wakeupDurationInput) {
-    wakeupDurationInput.value = state.master.wakeup?.duration_minutes ?? 30;
+    wakeupDurationInput.value = coalesce(getPath(state.master, ["wakeup", "duration_minutes"]), 30);
   }
   if (wakeupStartBrightnessInput) {
-    wakeupStartBrightnessInput.value = state.master.wakeup?.start_brightness_pct ?? 1;
+    wakeupStartBrightnessInput.value = coalesce(getPath(state.master, ["wakeup", "start_brightness_pct"]), 1);
   }
   if (retryEnabledToggle) {
-    retryEnabledToggle.checked = state.master.retry?.enabled !== false;
+    retryEnabledToggle.checked = getPath(state.master, ["retry", "enabled"]) !== false;
   }
   if (retryDelayInput) {
-    retryDelayInput.value = state.master.retry?.delay_seconds ?? 2;
+    retryDelayInput.value = coalesce(getPath(state.master, ["retry", "delay_seconds"]), 2);
   }
   if (retryMaxInput) {
-    retryMaxInput.value = state.master.retry?.max_retries ?? 3;
+    retryMaxInput.value = coalesce(getPath(state.master, ["retry", "max_retries"]), 3);
   }
   if (retryTolBrightnessInput) {
-    retryTolBrightnessInput.value = state.master.retry?.tolerance_brightness ?? 2;
+    retryTolBrightnessInput.value = coalesce(getPath(state.master, ["retry", "tolerance_brightness"]), 2);
   }
   if (retryTolCtInput) {
-    retryTolCtInput.value = state.master.retry?.tolerance_ct_k ?? 25;
+    retryTolCtInput.value = coalesce(getPath(state.master, ["retry", "tolerance_ct_k"]), 25);
   }
   if (retryTolHsInput) {
-    retryTolHsInput.value = state.master.retry?.tolerance_hs ?? 3;
+    retryTolHsInput.value = coalesce(getPath(state.master, ["retry", "tolerance_hs"]), 3);
   }
   if (retryTolRgbInput) {
-    retryTolRgbInput.value = state.master.retry?.tolerance_rgb ?? 3;
+    retryTolRgbInput.value = coalesce(getPath(state.master, ["retry", "tolerance_rgb"]), 3);
   }
   if (retryTolXyInput) {
-    retryTolXyInput.value = state.master.retry?.tolerance_xy ?? 0.01;
+    retryTolXyInput.value = coalesce(getPath(state.master, ["retry", "tolerance_xy"]), 0.01);
   }
   updateMasterOverlays();
   renderControllers();
   if (!editor.classList.contains("hidden")) {
     updateCurveOverlays();
   }
-  setMasterVisible(!masterSection?.classList.contains("hidden"));
+  setMasterVisible(!(masterSection && masterSection.classList.contains("hidden")));
   updateGraphRefreshTimer();
 }
 
@@ -362,7 +391,7 @@ function getNowMinutes() {
 }
 
 function getSelectedLightIds() {
-  return Array.from(lightList.querySelectorAll("input:checked")).map((input) => input.value);
+  return currentSelectedLights.slice();
 }
 
 function calculateCtBounds(selectedLights) {
@@ -646,7 +675,7 @@ function setMasterVisible(visible) {
   }
   masterSection.classList.toggle("hidden", !visible);
   if (toggleMasterBtn) {
-    toggleMasterBtn.textContent = visible ? "Hide Master" : "Master Curves";
+    toggleMasterBtn.textContent = visible ? "Hide Master" : "Master Settings";
   }
   if (visible) {
     requestAnimationFrame(() => {
@@ -665,48 +694,14 @@ function normalizeControllerKey(controller) {
   return `svtlc_${raw.replace(/\s+/g, "_")}`;
 }
 
-function getControllerTags(controller) {
-  if (!controller || !Array.isArray(controller.tags)) {
-    return [];
-  }
-  return controller.tags
-    .map((tag) => (typeof tag === "string" ? tag.trim() : ""))
-    .filter((tag) => tag.length);
-}
-
-function parseTagsInput(value) {
-  if (!value) {
-    return [];
-  }
-  return value
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter((tag) => tag.length);
-}
-
 function controllerMatchesFilters(controller) {
   const query = controllerSearch ? controllerSearch.value.trim().toLowerCase() : "";
-  const tagFilters = parseTagsInput(controllerTagsFilter ? controllerTagsFilter.value : "").map((tag) =>
-    tag.toLowerCase()
-  );
   const circadian = controller.circadian || {};
-  const tags = getControllerTags(controller).map((tag) => tag.toLowerCase());
-  const inputLights = Array.isArray(controller.input_lights) ? controller.input_lights : [];
-  const haystack = [
-    controller.name,
-    controller.unique_id,
-    tags.join(" "),
-    inputLights.join(" "),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (query && !haystack.includes(query)) {
-    return false;
-  }
-  if (tagFilters.length && !tagFilters.every((tag) => tags.includes(tag))) {
-    return false;
+  if (query) {
+    const haystack = `${controller.name || ""} ${controller.unique_id || ""} ${(controller.input_lights || []).join(" ")}`.toLowerCase();
+    if (!haystack.includes(query)) {
+      return false;
+    }
   }
   if (filterCircadian && filterCircadian.checked && !circadian.enabled) {
     return false;
@@ -802,168 +797,154 @@ function applyBulkAction(action) {
     });
 }
 
-function createControllerCard(controller, index) {
-  const key = normalizeControllerKey(controller);
+function buildControllerRow(controller) {
   const circadian = controller.circadian || {};
-  const tags = getControllerTags(controller);
   const inputLights = Array.isArray(controller.input_lights) ? controller.input_lights : [];
+  return {
+    name: controller.name || "Unnamed",
+    unique_id: controller.unique_id || "",
+    inputs: inputLights.length,
+    controller,
+  };
+}
 
-  const details = document.createElement("details");
-  details.className = "controller-item";
-  details.addEventListener("toggle", () => {
-    if (!details.open) {
-      return;
-    }
-    const openItems = controllerList.querySelectorAll("details[open]");
-    openItems.forEach((item) => {
-      if (item !== details) {
-        item.removeAttribute("open");
-      }
-    });
-  });
-
-  const summary = document.createElement("summary");
-  summary.className = "controller-summary";
-
-  const select = document.createElement("input");
-  select.type = "checkbox";
-  select.checked = state.selection.has(key);
-  select.addEventListener("change", (event) => {
-    if (event.target.checked) {
-      state.selection.add(key);
-    } else {
-      state.selection.delete(key);
-    }
-    updateBulkBar();
-  });
-
-  const name = document.createElement("div");
-  name.className = "controller-name";
-  name.textContent = controller.name || "Unnamed";
-
-  const metaRow = document.createElement("div");
-  metaRow.className = "controller-meta-row";
-  metaRow.textContent = `ID: ${controller.unique_id || ""} • Inputs: ${inputLights.length}`;
-
-  const tagWrap = document.createElement("div");
-  tagWrap.className = "controller-tags";
-  tags.forEach((tag) => {
-    const chip = document.createElement("span");
-    chip.className = "controller-tag";
-    chip.textContent = tag;
-    tagWrap.appendChild(chip);
-  });
-
-  const status = document.createElement("div");
-  status.className = "controller-status";
-  const pills = [
-    {
-      label: circadian.enabled ? "Circadian on" : "Circadian off",
-      active: circadian.enabled,
-    },
-    {
-      label: circadian.use_master_brightness ? "Master brightness" : "Custom brightness",
-      active: circadian.use_master_brightness,
-    },
-    {
-      label: circadian.use_master_color_temp ? "Master color temp" : "Custom color temp",
-      active: circadian.use_master_color_temp,
-    },
-  ];
-  pills.forEach((pill) => {
-    const span = document.createElement("span");
-    span.className = `status-pill${pill.active ? "" : " muted"}`;
-    span.textContent = pill.label;
-    status.appendChild(span);
-  });
-
-  const summaryText = document.createElement("div");
-  summaryText.appendChild(name);
-  summaryText.appendChild(metaRow);
-  if (tags.length) {
-    summaryText.appendChild(tagWrap);
+function findControllerIndex(rowData) {
+  if (!rowData) {
+    return -1;
   }
-
-  summary.appendChild(select);
-  summary.appendChild(summaryText);
-  summary.appendChild(status);
-  details.appendChild(summary);
-
-  const detail = document.createElement("div");
-  detail.className = "controller-detail";
-  const inputs = document.createElement("div");
-  inputs.textContent = `Inputs: ${inputLights.join(", ")}`;
-
-  const actions = document.createElement("div");
-  actions.className = "controller-actions-inline";
-  const editBtn = document.createElement("button");
-  editBtn.type = "button";
-  editBtn.textContent = "Edit";
-  editBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    openEditor(index);
+  const key = (rowData.unique_id || rowData.name || "").toString().trim().toLowerCase();
+  if (!key) {
+    return -1;
+  }
+  return state.controllers.findIndex((controller) => {
+    const controllerKey = (controller.unique_id || controller.name || "").toString().trim().toLowerCase();
+    return controllerKey === key;
   });
-  const deleteBtn = document.createElement("button");
-  deleteBtn.type = "button";
-  deleteBtn.textContent = "Delete";
-  deleteBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    deleteController(index);
+}
+
+
+let controllerTabulator = null;
+
+function initControllerTable(rows) {
+  if (!controllerTable) {
+    return;
+  }
+  const data = rows.map(buildControllerRow);
+  if (controllerTabulator) {
+    controllerTabulator.setData(data);
+    return;
+  }
+  if (typeof Tabulator === "undefined") {
+    controllerTable.innerHTML = "<div class=\"controller-empty\">Tabulator failed to load.</div>";
+    return;
+  }
+  controllerTabulator = new Tabulator(controllerTable, {
+    headerSortElement: function () {
+      const span = document.createElement("span");
+      span.className = "tabulator-sorter";
+      return span;
+    },
+    data,
+    layout: "fitColumns",
+    height: "480px",
+    reactiveData: false,
+    index: "unique_id",
+    rowHeight: 44,
+    columnDefaults: {
+      vertAlign: "middle",
+    },
+    columns: [
+      {
+        formatter: "rowSelection",
+        titleFormatter: "rowSelection",
+        headerSort: false,
+        width: 40,
+        hozAlign: "center",
+        cellClick: (e, cell) => cell.getRow().toggleSelect(),
+      },
+      { title: "Name", field: "name", headerSort: true },
+      { title: "ID", field: "unique_id", headerSort: true, width: 160 },
+      { title: "Inputs", field: "inputs", headerSort: true, hozAlign: "right", width: 80 },
+      {
+        title: "Actions",
+        headerSort: false,
+        width: 140,
+        formatter: () => "<span class=\"table-actions\"><button type=\"button\" class=\"edit-row\">Edit</button><button type=\"button\" class=\"delete-row\">Delete</button></span>",
+        cellClick: (e, cell) => {
+          const row = cell.getRow();
+          const data = row.getData();
+          const editBtn = e.target && e.target.closest ? e.target.closest(".edit-row") : null;
+          const deleteBtn = e.target && e.target.closest ? e.target.closest(".delete-row") : null;
+          if (editBtn) {
+            const index = findControllerIndex(data);
+            if (index >= 0) {
+              openEditor(index);
+            }
+          }
+          if (deleteBtn) {
+            const index = findControllerIndex(data);
+            if (index >= 0) {
+              deleteController(index);
+            }
+          }
+        },
+      },
+    ],
+    rowClick: (e, row) => {
+      if (e.target && (e.target.tagName === "BUTTON" || e.target.closest(".table-actions"))) {
+        return;
+      }
+      const data = row.getData();
+      const index = findControllerIndex(data);
+      if (index >= 0) {
+        openEditor(index);
+      }
+    },
+    rowSelectionChanged: (data) => {
+      state.selection.clear();
+      data.forEach((row) => state.selection.add(normalizeControllerKey(row.controller)));
+      updateBulkBar();
+    },
   });
-  actions.appendChild(editBtn);
-  actions.appendChild(deleteBtn);
+}
 
-  detail.appendChild(inputs);
-  detail.appendChild(actions);
-  details.appendChild(detail);
-
-  return details;
+function refreshControllerTable() {
+  if (!controllerTabulator) {
+    return;
+  }
+  const filtered = sortControllers(state.controllers.filter(controllerMatchesFilters));
+  controllerTabulator.setData(filtered.map(buildControllerRow));
 }
 
 function renderControllers(reset = true) {
+  if (!controllerTable) {
+    return;
+  }
   if (reset) {
-    controllerList.innerHTML = "";
+    controllerTable.innerHTML = "";
     if (!state.controllers.length) {
-      controllerList.innerHTML = "<p>No controllers configured yet.</p>";
+      controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers configured yet.</div>";
       updateBulkBar();
       return;
     }
-    state.visibleCount = 0;
     state.filteredControllers = sortControllers(state.controllers.filter(controllerMatchesFilters));
-  }
-
-  if (!state.filteredControllers.length) {
-    controllerList.innerHTML = "<p>No controllers match the current filters.</p>";
+    if (!state.filteredControllers.length) {
+      controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers match the current filters.</div>";
+      updateBulkBar();
+      return;
+    }
+    initControllerTable(state.filteredControllers);
     updateBulkBar();
     return;
   }
 
-  const nextBatch = state.filteredControllers.slice(
-    state.visibleCount,
-    state.visibleCount + state.pageSize
-  );
-  nextBatch.forEach((controller) => {
-    const index = state.controllers.indexOf(controller);
-    controllerList.appendChild(createControllerCard(controller, index));
-  });
-  state.visibleCount += nextBatch.length;
-
-  const sentinel = document.createElement("div");
-  sentinel.className = "controller-sentinel";
-  sentinel.textContent =
-    state.visibleCount < state.filteredControllers.length ? "Loading more..." : "End of list";
-  controllerList.appendChild(sentinel);
-
-  if (state.visibleCount < state.filteredControllers.length) {
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        observer.disconnect();
-        sentinel.remove();
-        renderControllers(false);
-      }
-    });
-    observer.observe(sentinel);
+  if (!state.filteredControllers.length) {
+    controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers match the current filters.</div>";
+    updateBulkBar();
+    return;
   }
+
+  refreshControllerTable();
   updateBulkBar();
 }
 
@@ -974,9 +955,6 @@ function openEditor(index) {
   editorTitle.textContent = controller ? "Edit Controller" : "New Controller";
   nameInput.value = controller ? controller.name || "" : "";
   uniqueInput.value = controller ? controller.unique_id || "" : "";
-  if (tagsInput) {
-    tagsInput.value = controller && Array.isArray(controller.tags) ? controller.tags.join(", ") : "";
-  }
   errorText.textContent = "";
 
   initCurveEditors();
@@ -997,7 +975,7 @@ function openEditor(index) {
     solarColorToggle.checked = circadian.solar_shift_color_temp !== false;
   }
   if (weatherEnabledToggle) {
-    const legacyMasterEnabled = Boolean(state.master?.weather?.enabled);
+    const legacyMasterEnabled = Boolean(getPath(state.master, ["weather", "enabled"]));
     const controllerEnabled = controller && typeof controller.weather_enabled === "boolean"
       ? controller.weather_enabled
       : legacyMasterEnabled;
@@ -1006,31 +984,49 @@ function openEditor(index) {
   const sleepCfg = controller && typeof controller.sleep === "object" ? controller.sleep : {};
   const sleepUseMaster = sleepUseMasterToggle ? sleepUseMasterToggle.checked : true;
   if (sleepUseMasterToggle) {
-    sleepUseMasterToggle.checked = sleepCfg?.use_master !== false;
+    sleepUseMasterToggle.checked = sleepCfg.use_master !== false;
   }
-  const sleepBase = sleepCfg?.use_master === false ? sleepCfg : state.master?.sleep || {};
+  const sleepBase = sleepCfg.use_master === false ? sleepCfg : (state.master && state.master.sleep ? state.master.sleep : {});
   if (sleepBrightnessOverrideInput) {
-    sleepBrightnessOverrideInput.value = sleepBase?.brightness_pct ?? state.master.sleep?.brightness_pct ?? 10;
+    sleepBrightnessOverrideInput.value = coalesce(
+      coalesce(getPath(sleepBase, ["brightness_pct"]), getPath(state.master, ["sleep", "brightness_pct"])),
+      10
+    );
   }
   if (sleepCtOverrideInput) {
-    sleepCtOverrideInput.value = sleepBase?.color_temp_kelvin ?? state.master.sleep?.color_temp_kelvin ?? 2200;
+    sleepCtOverrideInput.value = coalesce(
+      coalesce(getPath(sleepBase, ["color_temp_kelvin"]), getPath(state.master, ["sleep", "color_temp_kelvin"])),
+      2200
+    );
   }
   if (sleepHueOverrideInput) {
-    sleepHueOverrideInput.value = sleepBase?.hs_color?.[0] ?? state.master.sleep?.hs_color?.[0] ?? 30;
+    sleepHueOverrideInput.value = coalesce(
+      coalesce(getPath(sleepBase, ["hs_color", 0]), getPath(state.master, ["sleep", "hs_color", 0])),
+      30
+    );
   }
   if (sleepSatOverrideInput) {
-    sleepSatOverrideInput.value = sleepBase?.hs_color?.[1] ?? state.master.sleep?.hs_color?.[1] ?? 70;
+    sleepSatOverrideInput.value = coalesce(
+      coalesce(getPath(sleepBase, ["hs_color", 1]), getPath(state.master, ["sleep", "hs_color", 1])),
+      70
+    );
   }
   const wakeupCfg = controller && typeof controller.wakeup === "object" ? controller.wakeup : {};
   if (wakeupUseMasterToggle) {
-    wakeupUseMasterToggle.checked = wakeupCfg?.use_master !== false;
+    wakeupUseMasterToggle.checked = wakeupCfg.use_master !== false;
   }
-  const wakeupBase = wakeupCfg?.use_master === false ? wakeupCfg : state.master?.wakeup || {};
+  const wakeupBase = wakeupCfg.use_master === false ? wakeupCfg : (state.master && state.master.wakeup ? state.master.wakeup : {});
   if (wakeupDurationOverrideInput) {
-    wakeupDurationOverrideInput.value = wakeupBase?.duration_minutes ?? state.master.wakeup?.duration_minutes ?? 30;
+    wakeupDurationOverrideInput.value = coalesce(
+      coalesce(getPath(wakeupBase, ["duration_minutes"]), getPath(state.master, ["wakeup", "duration_minutes"])),
+      30
+    );
   }
   if (wakeupStartBrightnessOverrideInput) {
-    wakeupStartBrightnessOverrideInput.value = wakeupBase?.start_brightness_pct ?? state.master.wakeup?.start_brightness_pct ?? 1;
+    wakeupStartBrightnessOverrideInput.value = coalesce(
+      coalesce(getPath(wakeupBase, ["start_brightness_pct"]), getPath(state.master, ["wakeup", "start_brightness_pct"])),
+      1
+    );
   }
   toggleCircadianFields();
   updateSleepOverrides();
@@ -1046,7 +1042,8 @@ function openEditor(index) {
   if (lightSearch) {
     lightSearch.value = "";
   }
-  renderLightList(controller ? controller.input_lights || [] : []);
+  currentSelectedLights = Array.isArray(controller && controller.input_lights) ? controller.input_lights.slice() : [];
+  renderLightLists(currentSelectedLights);
   updateLimitBoundsFromSelection({ syncValues: false });
   applyLimitInputs(controller && controller.limits ? controller.limits : limitDefaults);
   updateCurveDisplayLimits();
@@ -1120,10 +1117,12 @@ function closeEditor() {
     colorTempCurve.setPoints(curveDefaults.color_temp);
   }
   form.reset();
-  if (tagsInput) {
-    tagsInput.value = "";
+  if (availableList) {
+    availableList.innerHTML = "";
   }
-  lightList.innerHTML = "";
+  if (selectedList) {
+    selectedList.innerHTML = "";
+  }
   errorText.textContent = "";
   state.editingIndex = null;
   editorCustomBrightness = null;
@@ -1133,11 +1132,17 @@ function closeEditor() {
   editorBrightnessEnabled = true;
   editorColorTempEnabled = true;
   currentCtBounds = { ...ctDefaultBounds };
+  currentSelectedLights = [];
 }
 
-function renderLightList(selected) {
-  lightList.innerHTML = "";
-  const selectedSet = new Set(selected);
+function renderLightLists(selected) {
+  if (!availableList || !selectedList) {
+    return;
+  }
+  if (Array.isArray(selected)) {
+    currentSelectedLights = Array.from(new Set(selected));
+  }
+  const selectedSet = new Set(currentSelectedLights);
   const used = new Set();
   state.controllers.forEach((controller, idx) => {
     if (idx === state.editingIndex) return;
@@ -1146,30 +1151,98 @@ function renderLightList(selected) {
 
   const query = lightSearch ? lightSearch.value.trim().toLowerCase() : "";
 
+  availableList.innerHTML = "";
+  selectedList.innerHTML = "";
+
+  let availableVisible = 0;
   state.lights.forEach((light) => {
+    if (selectedSet.has(light.entity_id)) {
+      return;
+    }
     if (query) {
       const haystack = `${light.name} ${light.entity_id}`.toLowerCase();
       if (!haystack.includes(query)) {
         return;
       }
     }
+
     const wrapper = document.createElement("label");
     wrapper.className = "light-item";
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.value = light.entity_id;
-    checkbox.checked = selectedSet.has(light.entity_id);
-    checkbox.disabled = used.has(light.entity_id) && !selectedSet.has(light.entity_id);
-    checkbox.addEventListener("change", updateLimitBoundsFromSelection);
+    checkbox.disabled = used.has(light.entity_id);
+
+    const label = document.createElement("span");
+    label.textContent = `${light.name} (${light.entity_id})`;
+
+    if (checkbox.disabled) {
+      const note = document.createElement("span");
+      note.className = "light-note";
+      note.textContent = "In use";
+      wrapper.appendChild(checkbox);
+      wrapper.appendChild(label);
+      wrapper.appendChild(note);
+    } else {
+      wrapper.appendChild(checkbox);
+      wrapper.appendChild(label);
+    }
+
+    availableList.appendChild(wrapper);
+    availableVisible += 1;
+  });
+
+  const lightById = new Map(state.lights.map((light) => [light.entity_id, light]));
+  currentSelectedLights.forEach((entityId) => {
+    const light = lightById.get(entityId) || { name: entityId, entity_id: entityId };
+    const wrapper = document.createElement("label");
+    wrapper.className = "light-item";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = entityId;
 
     const label = document.createElement("span");
     label.textContent = `${light.name} (${light.entity_id})`;
 
     wrapper.appendChild(checkbox);
     wrapper.appendChild(label);
-    lightList.appendChild(wrapper);
+    selectedList.appendChild(wrapper);
   });
+
+  if (availableCount) {
+    availableCount.textContent = String(availableVisible);
+  }
+  if (selectedCount) {
+    selectedCount.textContent = String(currentSelectedLights.length);
+  }
+}
+
+function collectCheckedIds(container) {
+  if (!container) {
+    return [];
+  }
+  return Array.from(container.querySelectorAll("input[type=checkbox]:checked")).map((input) => input.value);
+}
+
+function addSelectedLights(ids) {
+  if (!ids.length) {
+    return;
+  }
+  currentSelectedLights = Array.from(new Set([...currentSelectedLights, ...ids]));
+  renderLightLists(currentSelectedLights);
+  updateLimitBoundsFromSelection();
+}
+
+function removeSelectedLights(ids) {
+  if (!ids.length) {
+    return;
+  }
+  const toRemove = new Set(ids);
+  currentSelectedLights = currentSelectedLights.filter((id) => !toRemove.has(id));
+  renderLightLists(currentSelectedLights);
+  updateLimitBoundsFromSelection();
 }
 
 function toggleCircadianFields() {
@@ -1201,16 +1274,16 @@ function updateSleepOverrides() {
   }
   if (useMaster) {
     if (sleepBrightnessOverrideInput) {
-      sleepBrightnessOverrideInput.value = state.master.sleep?.brightness_pct ?? 10;
+      sleepBrightnessOverrideInput.value = coalesce(getPath(state.master, ["sleep", "brightness_pct"]), 10);
     }
     if (sleepCtOverrideInput) {
-      sleepCtOverrideInput.value = state.master.sleep?.color_temp_kelvin ?? 2200;
+      sleepCtOverrideInput.value = coalesce(getPath(state.master, ["sleep", "color_temp_kelvin"]), 2200);
     }
     if (sleepHueOverrideInput) {
-      sleepHueOverrideInput.value = state.master.sleep?.hs_color?.[0] ?? 30;
+      sleepHueOverrideInput.value = coalesce(getPath(state.master, ["sleep", "hs_color", 0]), 30);
     }
     if (sleepSatOverrideInput) {
-      sleepSatOverrideInput.value = state.master.sleep?.hs_color?.[1] ?? 70;
+      sleepSatOverrideInput.value = coalesce(getPath(state.master, ["sleep", "hs_color", 1]), 70);
     }
   }
 }
@@ -1228,10 +1301,10 @@ function updateWakeupOverrides() {
   }
   if (useMaster) {
     if (wakeupDurationOverrideInput) {
-      wakeupDurationOverrideInput.value = state.master.wakeup?.duration_minutes ?? 30;
+      wakeupDurationOverrideInput.value = coalesce(getPath(state.master, ["wakeup", "duration_minutes"]), 30);
     }
     if (wakeupStartBrightnessOverrideInput) {
-      wakeupStartBrightnessOverrideInput.value = state.master.wakeup?.start_brightness_pct ?? 1;
+      wakeupStartBrightnessOverrideInput.value = coalesce(getPath(state.master, ["wakeup", "start_brightness_pct"]), 1);
     }
   }
 }
@@ -1467,6 +1540,9 @@ function normalizeMaster(master) {
         uv_max: 8,
         visibility_max_km: 10,
         max_reduction_pct: 60,
+        cloud_weight: 0.55,
+        uv_weight: 0.3,
+        visibility_weight: 0.15,
       },
       smoothing: {
         brightness_rate_pct: 0.11,
@@ -1506,43 +1582,48 @@ function normalizeMaster(master) {
     solar_shift_brightness: master.solar_shift_brightness !== false,
     solar_shift_color_temp: master.solar_shift_color_temp !== false,
     weather: {
-      cloud_sensor: master.weather?.cloud_sensor || "sensor.openweathermap_cloud_coverage",
-      uv_sensor: master.weather?.uv_sensor || "sensor.openweathermap_uv_index",
-      visibility_sensor: master.weather?.visibility_sensor || "sensor.openweathermap_visibility",
-      weather_code_sensor: master.weather?.weather_code_sensor || "sensor.openweathermap_weather_code",
-      uv_max: Number.isFinite(master.weather?.uv_max) ? master.weather.uv_max : 8,
-      visibility_max_km: Number.isFinite(master.weather?.visibility_max_km) ? master.weather.visibility_max_km : 10,
-      max_reduction_pct: Number.isFinite(master.weather?.max_reduction_pct) ? master.weather.max_reduction_pct : 60,
+      cloud_sensor: getPath(master, ["weather", "cloud_sensor"]) || "sensor.openweathermap_cloud_coverage",
+      uv_sensor: getPath(master, ["weather", "uv_sensor"]) || "sensor.openweathermap_uv_index",
+      visibility_sensor: getPath(master, ["weather", "visibility_sensor"]) || "sensor.openweathermap_visibility",
+      weather_code_sensor: getPath(master, ["weather", "weather_code_sensor"]) || "sensor.openweathermap_weather_code",
+      uv_max: Number.isFinite(getPath(master, ["weather", "uv_max"])) ? master.weather.uv_max : 8,
+      visibility_max_km: Number.isFinite(getPath(master, ["weather", "visibility_max_km"])) ? master.weather.visibility_max_km : 10,
+      max_reduction_pct: Number.isFinite(getPath(master, ["weather", "max_reduction_pct"])) ? master.weather.max_reduction_pct : 60,
+      cloud_weight: Number.isFinite(getPath(master, ["weather", "cloud_weight"])) ? master.weather.cloud_weight : 0.55,
+      uv_weight: Number.isFinite(getPath(master, ["weather", "uv_weight"])) ? master.weather.uv_weight : 0.3,
+      visibility_weight: Number.isFinite(getPath(master, ["weather", "visibility_weight"])) ? master.weather.visibility_weight : 0.15,
     },
     smoothing: {
-      brightness_rate_pct: Number.isFinite(master.smoothing?.brightness_rate_pct) ? master.smoothing.brightness_rate_pct : 0.11,
-      ct_rate_k: Number.isFinite(master.smoothing?.ct_rate_k) ? master.smoothing.ct_rate_k : 2.67,
+      brightness_rate_pct: Number.isFinite(getPath(master, ["smoothing", "brightness_rate_pct"]))
+        ? master.smoothing.brightness_rate_pct
+        : 0.11,
+      ct_rate_k: Number.isFinite(getPath(master, ["smoothing", "ct_rate_k"])) ? master.smoothing.ct_rate_k : 2.67,
     },
     away: {
-      start_minutes: Number.isFinite(master.away?.start_minutes) ? master.away.start_minutes : 360,
-      end_minutes: Number.isFinite(master.away?.end_minutes) ? master.away.end_minutes : 1350,
-      min_minutes: Number.isFinite(master.away?.min_minutes) ? master.away.min_minutes : 30,
-      max_minutes: Number.isFinite(master.away?.max_minutes) ? master.away.max_minutes : 180,
-      offset_minutes: Number.isFinite(master.away?.offset_minutes) ? master.away.offset_minutes : 30,
+      start_minutes: Number.isFinite(getPath(master, ["away", "start_minutes"])) ? master.away.start_minutes : 360,
+      end_minutes: Number.isFinite(getPath(master, ["away", "end_minutes"])) ? master.away.end_minutes : 1350,
+      min_minutes: Number.isFinite(getPath(master, ["away", "min_minutes"])) ? master.away.min_minutes : 30,
+      max_minutes: Number.isFinite(getPath(master, ["away", "max_minutes"])) ? master.away.max_minutes : 180,
+      offset_minutes: Number.isFinite(getPath(master, ["away", "offset_minutes"])) ? master.away.offset_minutes : 30,
     },
     sleep: {
-      brightness_pct: Number.isFinite(master.sleep?.brightness_pct) ? master.sleep.brightness_pct : 10,
-      color_temp_kelvin: Number.isFinite(master.sleep?.color_temp_kelvin) ? master.sleep.color_temp_kelvin : 2200,
-      hs_color: Array.isArray(master.sleep?.hs_color) ? master.sleep.hs_color.slice(0, 2) : [30, 70],
+      brightness_pct: Number.isFinite(getPath(master, ["sleep", "brightness_pct"])) ? master.sleep.brightness_pct : 10,
+      color_temp_kelvin: Number.isFinite(getPath(master, ["sleep", "color_temp_kelvin"])) ? master.sleep.color_temp_kelvin : 2200,
+      hs_color: Array.isArray(getPath(master, ["sleep", "hs_color"])) ? master.sleep.hs_color.slice(0, 2) : [30, 70],
     },
     wakeup: {
-      duration_minutes: Number.isFinite(master.wakeup?.duration_minutes) ? master.wakeup.duration_minutes : 30,
-      start_brightness_pct: Number.isFinite(master.wakeup?.start_brightness_pct) ? master.wakeup.start_brightness_pct : 1,
+      duration_minutes: Number.isFinite(getPath(master, ["wakeup", "duration_minutes"])) ? master.wakeup.duration_minutes : 30,
+      start_brightness_pct: Number.isFinite(getPath(master, ["wakeup", "start_brightness_pct"])) ? master.wakeup.start_brightness_pct : 1,
     },
     retry: {
-      enabled: master.retry?.enabled !== false,
-      delay_seconds: Number.isFinite(master.retry?.delay_seconds) ? master.retry.delay_seconds : 2,
-      max_retries: Number.isFinite(master.retry?.max_retries) ? master.retry.max_retries : 3,
-      tolerance_brightness: Number.isFinite(master.retry?.tolerance_brightness) ? master.retry.tolerance_brightness : 2,
-      tolerance_ct_k: Number.isFinite(master.retry?.tolerance_ct_k) ? master.retry.tolerance_ct_k : 25,
-      tolerance_hs: Number.isFinite(master.retry?.tolerance_hs) ? master.retry.tolerance_hs : 3,
-      tolerance_rgb: Number.isFinite(master.retry?.tolerance_rgb) ? master.retry.tolerance_rgb : 3,
-      tolerance_xy: Number.isFinite(master.retry?.tolerance_xy) ? master.retry.tolerance_xy : 0.01,
+      enabled: getPath(master, ["retry", "enabled"]) !== false,
+      delay_seconds: Number.isFinite(getPath(master, ["retry", "delay_seconds"])) ? master.retry.delay_seconds : 2,
+      max_retries: Number.isFinite(getPath(master, ["retry", "max_retries"])) ? master.retry.max_retries : 3,
+      tolerance_brightness: Number.isFinite(getPath(master, ["retry", "tolerance_brightness"])) ? master.retry.tolerance_brightness : 2,
+      tolerance_ct_k: Number.isFinite(getPath(master, ["retry", "tolerance_ct_k"])) ? master.retry.tolerance_ct_k : 25,
+      tolerance_hs: Number.isFinite(getPath(master, ["retry", "tolerance_hs"])) ? master.retry.tolerance_hs : 3,
+      tolerance_rgb: Number.isFinite(getPath(master, ["retry", "tolerance_rgb"])) ? master.retry.tolerance_rgb : 3,
+      tolerance_xy: Number.isFinite(getPath(master, ["retry", "tolerance_xy"])) ? master.retry.tolerance_xy : 0.01,
     },
   };
 }
@@ -1602,7 +1683,9 @@ function setSolarEditable(kind, editable) {
     toggle.checked = Boolean(masterValue);
   }
   toggle.disabled = !editable;
-  toggle.parentElement?.classList.toggle("curve-locked", !editable);
+  if (toggle.parentElement) {
+    toggle.parentElement.classList.toggle("curve-locked", !editable);
+  }
 }
 
 function buildOverlayBundle(monthSamples, current) {
@@ -1858,11 +1941,8 @@ async function saveConfig() {
 function validateForm() {
   const name = nameInput.value.trim();
   const uniqueId = uniqueInput.value.trim();
-  const selectedLights = Array.from(lightList.querySelectorAll("input:checked")).map(
-    (input) => input.value
-  );
-  const tags = tagsInput ? parseTagsInput(tagsInput.value) : [];
-
+  const selectedLights = currentSelectedLights.slice();
+  
   if (!name) {
     return "Name is required.";
   }
@@ -1892,8 +1972,12 @@ function validateForm() {
   if (circadianToggle && circadianToggle.checked) {
     const useMasterBrightness = useMasterBrightnessToggle ? useMasterBrightnessToggle.checked : false;
     const useMasterColor = useMasterColorToggle ? useMasterColorToggle.checked : false;
-    const brightnessPoints = useMasterBrightness ? state.master.brightness_curve : brightnessCurve?.getPoints() || [];
-    const colorPoints = useMasterColor ? state.master.color_temp_curve : colorTempCurve?.getPoints() || [];
+    const brightnessPoints = useMasterBrightness
+      ? state.master.brightness_curve
+      : (brightnessCurve ? brightnessCurve.getPoints() : []);
+    const colorPoints = useMasterColor
+      ? state.master.color_temp_curve
+      : (colorTempCurve ? colorTempCurve.getPoints() : []);
 
     if (!brightnessPoints || brightnessPoints.length < 2) {
       return "Brightness curve needs at least two points.";
@@ -1948,42 +2032,45 @@ if (saveMasterBtn) {
       uv_sensor: weatherUvInput ? weatherUvInput.value.trim() : "",
       visibility_sensor: weatherVisibilityInput ? weatherVisibilityInput.value.trim() : "",
       weather_code_sensor: weatherCodeInput ? weatherCodeInput.value.trim() : "",
-      uv_max: Number(weatherUvMaxInput?.value || 8),
-      visibility_max_km: Number(weatherVisibilityMaxInput?.value || 10),
-      max_reduction_pct: Number(weatherMaxReductionInput?.value || 60),
+      uv_max: Number((weatherUvMaxInput && weatherUvMaxInput.value) || 8),
+      visibility_max_km: Number((weatherVisibilityMaxInput && weatherVisibilityMaxInput.value) || 10),
+      max_reduction_pct: Number((weatherMaxReductionInput && weatherMaxReductionInput.value) || 60),
+      cloud_weight: clampValue(parseFloatOr(weatherCloudWeightInput ? weatherCloudWeightInput.value : undefined, 0.55), 0, 1),
+      uv_weight: clampValue(parseFloatOr(weatherUvWeightInput ? weatherUvWeightInput.value : undefined, 0.3), 0, 1),
+      visibility_weight: clampValue(parseFloatOr(weatherVisibilityWeightInput ? weatherVisibilityWeightInput.value : undefined, 0.15), 0, 1),
     };
     state.master.smoothing = {
-      brightness_rate_pct: roundTo2(Number(smoothBrightnessRateInput?.value ?? 0.11)),
-      ct_rate_k: roundTo2(Number(smoothCtRateInput?.value ?? 2.67)),
+      brightness_rate_pct: roundTo2(Number(coalesce(smoothBrightnessRateInput && smoothBrightnessRateInput.value, 0.11))),
+      ct_rate_k: roundTo2(Number(coalesce(smoothCtRateInput && smoothCtRateInput.value, 2.67))),
     };
     state.master.sleep = {
-      brightness_pct: parseIntOr(sleepBrightnessInput?.value, 10),
-      color_temp_kelvin: parseIntOr(sleepCtInput?.value, 2200),
+      brightness_pct: parseIntOr(sleepBrightnessInput ? sleepBrightnessInput.value : undefined, 10),
+      color_temp_kelvin: parseIntOr(sleepCtInput ? sleepCtInput.value : undefined, 2200),
       hs_color: [
-        parseFloatOr(sleepHueInput?.value, 30),
-        parseFloatOr(sleepSatInput?.value, 70),
+        parseFloatOr(sleepHueInput ? sleepHueInput.value : undefined, 30),
+        parseFloatOr(sleepSatInput ? sleepSatInput.value : undefined, 70),
       ],
     };
     state.master.wakeup = {
-      duration_minutes: parseIntOr(wakeupDurationInput?.value, 30),
-      start_brightness_pct: parseIntOr(wakeupStartBrightnessInput?.value, 1),
+      duration_minutes: parseIntOr(wakeupDurationInput ? wakeupDurationInput.value : undefined, 30),
+      start_brightness_pct: parseIntOr(wakeupStartBrightnessInput ? wakeupStartBrightnessInput.value : undefined, 1),
     };
     state.master.retry = {
       enabled: retryEnabledToggle ? retryEnabledToggle.checked : true,
-      delay_seconds: parseIntOr(retryDelayInput?.value, 2),
-      max_retries: parseIntOr(retryMaxInput?.value, 3),
-      tolerance_brightness: parseIntOr(retryTolBrightnessInput?.value, 2),
-      tolerance_ct_k: parseIntOr(retryTolCtInput?.value, 25),
-      tolerance_hs: parseFloatOr(retryTolHsInput?.value, 3),
-      tolerance_rgb: parseIntOr(retryTolRgbInput?.value, 3),
-      tolerance_xy: parseFloatOr(retryTolXyInput?.value, 0.01),
+      delay_seconds: parseIntOr(retryDelayInput ? retryDelayInput.value : undefined, 2),
+      max_retries: parseIntOr(retryMaxInput ? retryMaxInput.value : undefined, 3),
+      tolerance_brightness: parseIntOr(retryTolBrightnessInput ? retryTolBrightnessInput.value : undefined, 2),
+      tolerance_ct_k: parseIntOr(retryTolCtInput ? retryTolCtInput.value : undefined, 25),
+      tolerance_hs: parseFloatOr(retryTolHsInput ? retryTolHsInput.value : undefined, 3),
+      tolerance_rgb: parseIntOr(retryTolRgbInput ? retryTolRgbInput.value : undefined, 3),
+      tolerance_xy: parseFloatOr(retryTolXyInput ? retryTolXyInput.value : undefined, 0.01),
     };
     state.master.away = {
-      start_minutes: parseTimeToMinutes(awayStartInput?.value, 360),
-      end_minutes: parseTimeToMinutes(awayEndInput?.value, 1350),
-      min_minutes: parseIntOr(awayMinMinutesInput?.value, 30),
-      max_minutes: parseIntOr(awayMaxMinutesInput?.value, 180),
-      offset_minutes: parseIntOr(awayOffsetMinutesInput?.value, 30),
+      start_minutes: parseTimeToMinutes(awayStartInput ? awayStartInput.value : undefined, 360),
+      end_minutes: parseTimeToMinutes(awayEndInput ? awayEndInput.value : undefined, 1350),
+      min_minutes: parseIntOr(awayMinMinutesInput ? awayMinMinutesInput.value : undefined, 30),
+      max_minutes: parseIntOr(awayMaxMinutesInput ? awayMaxMinutesInput.value : undefined, 180),
+      offset_minutes: parseIntOr(awayOffsetMinutesInput ? awayOffsetMinutesInput.value : undefined, 30),
     };
     try {
       await saveConfig();
@@ -1995,7 +2082,7 @@ if (saveMasterBtn) {
 }
 if (toggleMasterBtn) {
   toggleMasterBtn.addEventListener("click", () => {
-    const isHidden = masterSection?.classList.contains("hidden");
+    const isHidden = masterSection ? masterSection.classList.contains("hidden") : true;
     setMasterVisible(isHidden);
   });
 }
@@ -2018,9 +2105,6 @@ if (masterSolarColorToggle) {
 }
 if (controllerSearch) {
   controllerSearch.addEventListener("input", () => renderControllers(true));
-}
-if (controllerTagsFilter) {
-  controllerTagsFilter.addEventListener("input", () => renderControllers(true));
 }
 if (controllerSort) {
   controllerSort.addEventListener("change", () => renderControllers(true));
@@ -2099,9 +2183,7 @@ form.addEventListener("submit", async (event) => {
 
   const name = nameInput.value.trim();
   const uniqueId = uniqueInput.value.trim();
-  const selectedLights = Array.from(lightList.querySelectorAll("input:checked")).map(
-    (input) => input.value
-  );
+  const selectedLights = currentSelectedLights.slice();
 
   const existing = state.editingIndex !== null ? state.controllers[state.editingIndex] : null;
   const existingCircadian = existing && existing.circadian ? existing.circadian : {};
@@ -2115,25 +2197,40 @@ form.addEventListener("submit", async (event) => {
     use_master: sleepUseMaster,
   };
   if (!sleepUseMaster) {
-    sleepPayload.brightness_pct = clampValue(parseIntOr(sleepBrightnessOverrideInput?.value, 10), 1, 100);
-    sleepPayload.color_temp_kelvin = clampValue(parseIntOr(sleepCtOverrideInput?.value, 2200), 1500, 8000);
+    sleepPayload.brightness_pct = clampValue(
+      parseIntOr(sleepBrightnessOverrideInput ? sleepBrightnessOverrideInput.value : undefined, 10),
+      1,
+      100
+    );
+    sleepPayload.color_temp_kelvin = clampValue(
+      parseIntOr(sleepCtOverrideInput ? sleepCtOverrideInput.value : undefined, 2200),
+      1500,
+      8000
+    );
     sleepPayload.hs_color = [
-      clampValue(parseFloatOr(sleepHueOverrideInput?.value, 30), 0, 360),
-      clampValue(parseFloatOr(sleepSatOverrideInput?.value, 70), 0, 100),
+      clampValue(parseFloatOr(sleepHueOverrideInput ? sleepHueOverrideInput.value : undefined, 30), 0, 360),
+      clampValue(parseFloatOr(sleepSatOverrideInput ? sleepSatOverrideInput.value : undefined, 70), 0, 100),
     ];
   }
   const wakeupPayload = {
     use_master: wakeupUseMaster,
   };
   if (!wakeupUseMaster) {
-    wakeupPayload.duration_minutes = clampValue(parseIntOr(wakeupDurationOverrideInput?.value, 30), 1, 240);
-    wakeupPayload.start_brightness_pct = clampValue(parseIntOr(wakeupStartBrightnessOverrideInput?.value, 1), 1, 100);
+    wakeupPayload.duration_minutes = clampValue(
+      parseIntOr(wakeupDurationOverrideInput ? wakeupDurationOverrideInput.value : undefined, 30),
+      1,
+      240
+    );
+    wakeupPayload.start_brightness_pct = clampValue(
+      parseIntOr(wakeupStartBrightnessOverrideInput ? wakeupStartBrightnessOverrideInput.value : undefined, 1),
+      1,
+      100
+    );
   }
   const payload = {
     name,
     unique_id: uniqueId || name,
     input_lights: selectedLights,
-    tags,
     weather_enabled: weatherEnabledToggle ? weatherEnabledToggle.checked : false,
     limits: readLimitInputs(),
     sleep: sleepPayload,
@@ -2190,7 +2287,7 @@ async function deleteController(index) {
 }
 
 loadData().catch(() => {
-  controllerList.innerHTML = "<p>Unable to load data. Check add-on logs.</p>";
+  if (controllerTable) { controllerTable.innerHTML = "<div class=\"controller-empty\">Unable to load data. Check add-on logs.</div>"; }
 });
 
 function updateGraphRefreshTimer() {
@@ -2208,8 +2305,14 @@ function updateGraphRefreshTimer() {
 }
 
 async function saveRuntimeIntervals() {
-  const circadianValue = Number.parseInt(circadianIntervalInput?.value ?? "60", 10);
-  const wakeupValue = Number.parseInt(wakeupIntervalInput?.value ?? "2", 10);
+  const circadianValue = Number.parseInt(
+    coalesce(circadianIntervalInput ? circadianIntervalInput.value : undefined, "60"),
+    10
+  );
+  const wakeupValue = Number.parseInt(
+    coalesce(wakeupIntervalInput ? wakeupIntervalInput.value : undefined, "2"),
+    10
+  );
   if (!Number.isFinite(circadianValue) || circadianValue < 1 || circadianValue > 3600) {
     if (circadianIntervalInput) {
       circadianIntervalInput.value = 60;
@@ -2238,10 +2341,39 @@ async function saveRuntimeIntervals() {
 
 if (lightSearch) {
   lightSearch.addEventListener("input", () => {
-    const selectedLights = Array.from(lightList.querySelectorAll("input:checked")).map(
+    renderLightLists(currentSelectedLights);
+  });
+}
+
+if (addSelectedBtn) {
+  addSelectedBtn.addEventListener("click", () => {
+    addSelectedLights(collectCheckedIds(availableList));
+  });
+}
+
+if (addAllBtn) {
+  addAllBtn.addEventListener("click", () => {
+    if (!availableList) {
+      return;
+    }
+    const ids = Array.from(availableList.querySelectorAll("input[type=checkbox]:not(:disabled)")).map(
       (input) => input.value
     );
-    renderLightList(selectedLights);
+    addSelectedLights(ids);
+  });
+}
+
+if (removeSelectedBtn) {
+  removeSelectedBtn.addEventListener("click", () => {
+    removeSelectedLights(collectCheckedIds(selectedList));
+  });
+}
+
+if (removeAllBtn) {
+  removeAllBtn.addEventListener("click", () => {
+    currentSelectedLights = [];
+    renderLightLists(currentSelectedLights);
+    updateLimitBoundsFromSelection();
   });
 }
 
@@ -2539,7 +2671,7 @@ class CurveEditor {
     if (!Number.isFinite(displayValue)) {
       let value = this.nowValue;
       if (!Number.isFinite(value)) {
-        const nowPoints = Array.isArray(this.overlays?.current) && this.overlays.current.length >= 2
+        const nowPoints = Array.isArray(this.overlays && this.overlays.current) && this.overlays.current.length >= 2
           ? this.overlays.current
           : this.points;
         if (nowPoints.length < 2) {
@@ -2791,6 +2923,22 @@ function monotoneHermite(p0, p1, p2, p3, t, span) {
 
   return h00 * p1.v + h10 * m1 * span + h01 * p2.v + h11 * m2 * span;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

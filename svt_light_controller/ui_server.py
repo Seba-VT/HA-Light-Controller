@@ -86,6 +86,29 @@ def _write_runtime(payload: dict) -> None:
     os.replace(tmp_path, RUNTIME_PATH)
 
 
+def _content_type(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".js":
+        return "application/javascript"
+    if ext == ".css":
+        return "text/css"
+    if ext == ".map":
+        return "application/json"
+    if ext in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}:
+        return f"image/{ext.lstrip('.') if ext != '.jpg' else 'jpeg'}"
+    if ext in {".woff2", ".woff"}:
+        return "font/woff2" if ext == ".woff2" else "font/woff"
+    return "application/octet-stream"
+
+
+def _safe_path(root: str, raw_path: str) -> str | None:
+    safe_path = os.path.normpath(raw_path).lstrip(os.sep)
+    full_path = os.path.normpath(os.path.join(root, safe_path))
+    if not full_path.startswith(os.path.normpath(root)):
+        return None
+    return full_path
+
+
 
 def _fetch_ha_config() -> dict | None:
     if not SUPERVISOR_TOKEN:
@@ -313,10 +336,18 @@ class SvtlcHandler(BaseHTTPRequestHandler):
         path = self._clean_path()
         if path == "/" or path == "/index.html":
             return self._send_file(os.path.join(WEB_ROOT, "index.html"), "text/html; charset=utf-8")
-        if path == "/app.js":
-            return self._send_file(os.path.join(WEB_ROOT, "app.js"), "application/javascript")
-        if path == "/style.css":
-            return self._send_file(os.path.join(WEB_ROOT, "style.css"), "text/css")
+        if path.endswith(".js") or path.endswith(".css"):
+            full_path = _safe_path(WEB_ROOT, path)
+            if not full_path or not os.path.isfile(full_path):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            return self._send_file(full_path, _content_type(full_path))
+        if path.startswith("/vendor/"):
+            full_path = _safe_path(WEB_ROOT, path)
+            if not full_path:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            return self._send_file(full_path, _content_type(full_path))
         if path == "/api/config":
             return self._send_json(_read_config())
         if path == "/api/lights":
