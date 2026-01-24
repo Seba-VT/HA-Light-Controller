@@ -29,6 +29,10 @@ Configure the add-on options in the UI:
 - `circadian_interval` (seconds between circadian updates)
 - `wakeup_interval` (seconds between wakeup updates)
 
+## Dependencies
+- **MQTT broker** (required): the add-on publishes and subscribes to MQTT topics (e.g., Mosquitto).  
+  Default host: `core-mosquitto` on port `1883`.
+
 ## Usage
 1. Open the add-on UI (Ingress panel).
 2. Click **Add Controller**.
