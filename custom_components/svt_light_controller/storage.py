@@ -31,12 +31,10 @@ def _normalize_controller(raw: dict) -> dict | None:
         return None
     if not isinstance(unique_id, str) or not unique_id.strip():
         return None
-    if not isinstance(input_lights, list) or not input_lights:
-        return None
+    if not isinstance(input_lights, list):
+        input_lights = []
 
     cleaned_inputs = [item for item in input_lights if isinstance(item, str) and item.strip()]
-    if not cleaned_inputs:
-        return None
 
     controller = {
         CONF_NAME: name.strip(),

@@ -151,13 +151,15 @@ def _fetch_sun_state() -> dict | None:
     return data.get("attributes") if isinstance(data.get("attributes"), dict) else None
 
 
-def _today_sun_times(now: datetime, sun_attrs: dict | None) -> tuple[int | None, int | None]:
+def _today_sun_times(now: datetime, sun_attrs: dict | None, tz: ZoneInfo) -> tuple[int | None, int | None]:
     if not sun_attrs:
         return None, None
     next_rising = _parse_iso(sun_attrs.get("next_rising"))
     next_setting = _parse_iso(sun_attrs.get("next_setting"))
     if not next_rising or not next_setting:
         return None, None
+    next_rising = next_rising.astimezone(tz)
+    next_setting = next_setting.astimezone(tz)
 
     sunrise = next_rising if next_rising.date() == now.date() else next_rising - timedelta(days=1)
     sunset = next_setting if next_setting.date() == now.date() else next_setting - timedelta(days=1)
@@ -224,7 +226,7 @@ def _build_solar_payload() -> dict:
 
     today = now.date()
     sun_attrs = _fetch_sun_state()
-    sun_sunrise, sun_sunset = _today_sun_times(now, sun_attrs)
+    sun_sunrise, sun_sunset = _today_sun_times(now, sun_attrs, tz)
     sunrise, sunset = _sunrise_sunset(today, latitude, longitude, tz)
     sunrise = sun_sunrise if sun_sunrise is not None else sunrise
     sunset = sun_sunset if sun_sunset is not None else sunset
@@ -328,6 +330,7 @@ class SvtlcHandler(BaseHTTPRequestHandler):
 
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

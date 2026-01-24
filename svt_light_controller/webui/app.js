@@ -1,3 +1,4 @@
+// ui-build: 20260122-30
 const state = {
   controllers: [],
   lights: [],
@@ -5,7 +6,6 @@ const state = {
   editingIndex: null,
   filteredControllers: [],
   visibleCount: 0,
-  selection: new Set(),
   pageSize: 20,
   timeOffsetMinutes: 0,
 };
@@ -88,20 +88,14 @@ const ctMinValue = document.getElementById("ct-min-value");
 const ctMaxValue = document.getElementById("ct-max-value");
 const weatherMinInput = document.getElementById("weather-min");
 const weatherMinValue = document.getElementById("weather-min-value");
-const lightSearch = document.getElementById("light-search");
 const addSelectedBtn = document.getElementById("add-selected");
 const removeSelectedBtn = document.getElementById("remove-selected");
 const addAllBtn = document.getElementById("add-all");
 const removeAllBtn = document.getElementById("remove-all");
-const controllerSearch = document.getElementById("controller-search");
-const controllerSort = document.getElementById("controller-sort");
-const filterCircadian = document.getElementById("filter-circadian");
-const filterMasterBrightness = document.getElementById("filter-master-brightness");
-const filterMasterColor = document.getElementById("filter-master-color");
-const bulkActions = document.getElementById("bulk-actions");
-const bulkCount = document.getElementById("bulk-count");
-const bulkSelectAll = document.getElementById("bulk-select-all");
-const bulkClear = document.getElementById("bulk-clear");
+const availableTableEl = document.getElementById("available-table");
+const selectedTableEl = document.getElementById("selected-table");
+const availableCount = document.getElementById("available-count");
+const selectedCount = document.getElementById("selected-count");
 const solarControls = {
   brightness: solarBrightnessToggle,
   color: solarColorToggle,
@@ -158,6 +152,15 @@ function coalesce(value, fallback) {
   return value !== null && value !== undefined ? value : fallback;
 }
 
+function normalizeId(value) {
+  const raw = (value || "").toString().trim().toLowerCase();
+  if (!raw) {
+    return "";
+  }
+  const cleaned = raw.replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+  return cleaned.replace(/^_+|_+$/g, "");
+}
+
 function getPath(obj, path) {
   let current = obj;
   for (let i = 0; i < path.length; i += 1) {
@@ -201,8 +204,6 @@ async function loadData() {
     state.timeOffsetMinutes =
       (state.solar.now_epoch - Date.now() / 1000) / 60;
   }
-  const validKeys = new Set(state.controllers.map((controller) => normalizeControllerKey(controller)));
-  state.selection = new Set([...state.selection].filter((key) => validKeys.has(key)));
   if (circadianIntervalInput) {
     try {
       const runtime = await fetchJson("api/runtime");
@@ -334,6 +335,9 @@ async function loadData() {
   }
   updateMasterOverlays();
   renderControllers();
+  if (!editor.classList.contains("hidden")) {
+    renderLightLists(currentSelectedLights);
+  }
   if (!editor.classList.contains("hidden")) {
     updateCurveOverlays();
   }
@@ -694,117 +698,23 @@ function normalizeControllerKey(controller) {
   return `svtlc_${raw.replace(/\s+/g, "_")}`;
 }
 
-function controllerMatchesFilters(controller) {
-  const query = controllerSearch ? controllerSearch.value.trim().toLowerCase() : "";
-  const circadian = controller.circadian || {};
-  if (query) {
-    const haystack = `${controller.name || ""} ${controller.unique_id || ""} ${(controller.input_lights || []).join(" ")}`.toLowerCase();
-    if (!haystack.includes(query)) {
-      return false;
-    }
-  }
-  if (filterCircadian && filterCircadian.checked && !circadian.enabled) {
-    return false;
-  }
-  if (filterMasterBrightness && filterMasterBrightness.checked && !circadian.use_master_brightness) {
-    return false;
-  }
-  if (filterMasterColor && filterMasterColor.checked && !circadian.use_master_color_temp) {
-    return false;
-  }
+function controllerMatchesFilters() {
   return true;
 }
 
 function sortControllers(list) {
-  const sortValue = controllerSort ? controllerSort.value : "name";
-  return list.slice().sort((a, b) => {
-    if (sortValue === "inputs") {
-      return (b.input_lights || []).length - (a.input_lights || []).length;
-    }
-    if (sortValue === "id") {
-      return (a.unique_id || "").localeCompare(b.unique_id || "");
-    }
-    return (a.name || "").localeCompare(b.name || "");
-  });
+  return list.slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 }
 
-function updateBulkBar() {
-  if (!bulkActions || !bulkCount) {
-    return;
-  }
-  const count = state.selection.size;
-  bulkCount.textContent = `${count} selected`;
-  bulkActions.classList.toggle("hidden", count === 0);
-}
-
-function applyBulkAction(action) {
-  if (!action) {
-    return;
-  }
-  const selected = new Set(state.selection);
-  if (!selected.size) {
-    return;
-  }
-
-  state.controllers.forEach((controller) => {
-    const key = normalizeControllerKey(controller);
-    if (!selected.has(key)) {
-      return;
-    }
-    const circadian = controller.circadian || {};
-    controller.circadian = circadian;
-
-    switch (action) {
-      case "circadian_on":
-        circadian.enabled = true;
-        break;
-      case "circadian_off":
-        circadian.enabled = false;
-        break;
-      case "master_brightness_on":
-        circadian.use_master_brightness = true;
-        break;
-      case "master_brightness_off":
-        circadian.use_master_brightness = false;
-        break;
-      case "master_color_on":
-        circadian.use_master_color_temp = true;
-        break;
-      case "master_color_off":
-        circadian.use_master_color_temp = false;
-        break;
-      case "solar_brightness_on":
-        circadian.solar_shift_brightness = true;
-        break;
-      case "solar_brightness_off":
-        circadian.solar_shift_brightness = false;
-        break;
-      case "solar_color_on":
-        circadian.solar_shift_color_temp = true;
-        break;
-      case "solar_color_off":
-        circadian.solar_shift_color_temp = false;
-        break;
-      default:
-        break;
-    }
-  });
-
-  saveConfig()
-    .then(loadData)
-    .catch(() => {
-      errorText.textContent = "Failed to save configuration.";
-    });
-}
 
 function buildControllerRow(controller) {
-  const circadian = controller.circadian || {};
   const inputLights = Array.isArray(controller.input_lights) ? controller.input_lights : [];
   return {
     name: controller.name || "Unnamed",
     unique_id: controller.unique_id || "",
     inputs: inputLights.length,
     controller,
+    controller_index: state.controllers.indexOf(controller),
   };
 }
 
@@ -824,6 +734,97 @@ function findControllerIndex(rowData) {
 
 
 let controllerTabulator = null;
+let availableTabulator = null;
+let selectedTabulator = null;
+let availableTableReady = false;
+let selectedTableReady = false;
+let lastAvailableClickId = null;
+let lastSelectedClickId = null;
+let lastAvailableRows = [];
+let lastSelectedRows = [];
+let lightTableRetry = 0;
+let lightTableRetryTimer = null;
+const ROW_SELECTED_BG = "rgba(255, 255, 255, 0.06)";
+const ROW_HOVER_BG = "#404040";
+const availablePickedIds = new Set();
+const selectedPickedIds = new Set();
+
+function setRowBackground(row, color) {
+  if (!row) {
+    return;
+  }
+  const el = row.getElement();
+  if (!el) {
+    return;
+  }
+  el.style.backgroundColor = color;
+  el.style.background = color;
+  const cells = el.querySelectorAll(".tabulator-cell");
+  cells.forEach((cell) => {
+    cell.style.backgroundColor = color;
+    cell.style.background = color;
+  });
+}
+
+function clearRowBackground(row) {
+  if (!row) {
+    return;
+  }
+  const el = row.getElement();
+  if (!el) {
+    return;
+  }
+  el.style.removeProperty("background-color");
+  el.style.removeProperty("background");
+  const cells = el.querySelectorAll(".tabulator-cell");
+  cells.forEach((cell) => {
+    cell.style.removeProperty("background-color");
+    cell.style.removeProperty("background");
+  });
+}
+
+function clearPickedRows(table) {
+  if (!table) {
+    return;
+  }
+  table.getRows().forEach((row) => {
+    const el = row.getElement();
+    if (el && el.classList.contains("svt-row-picked")) {
+      el.classList.remove("svt-row-picked");
+      clearRowBackground(row);
+    }
+  });
+}
+
+function clearPickedIds(set) {
+  if (set && set.size) {
+    set.clear();
+  }
+}
+
+function togglePickedRow(table, row, set) {
+  if (!row || !set) {
+    return;
+  }
+  const data = row.getData();
+  const id = data ? data.entity_id : null;
+  if (!id) {
+    return;
+  }
+  const el = row.getElement();
+  if (!el) {
+    return;
+  }
+  if (set.has(id)) {
+    set.delete(id);
+    el.classList.remove("svt-row-picked");
+    clearRowBackground(row);
+    return;
+  }
+  set.add(id);
+  el.classList.add("svt-row-picked");
+  setRowBackground(row, ROW_SELECTED_BG);
+}
 
 function initControllerTable(rows) {
   if (!controllerTable) {
@@ -839,29 +840,18 @@ function initControllerTable(rows) {
     return;
   }
   controllerTabulator = new Tabulator(controllerTable, {
-    headerSortElement: function () {
-      const span = document.createElement("span");
-      span.className = "tabulator-sorter";
-      return span;
-    },
     data,
     layout: "fitColumns",
-    height: "480px",
+    height: "100%",
     reactiveData: false,
     index: "unique_id",
     rowHeight: 44,
     columnDefaults: {
+      headerSort: true,
       vertAlign: "middle",
     },
+    headerSortClickElement: "header",
     columns: [
-      {
-        formatter: "rowSelection",
-        titleFormatter: "rowSelection",
-        headerSort: false,
-        width: 40,
-        hozAlign: "center",
-        cellClick: (e, cell) => cell.getRow().toggleSelect(),
-      },
       { title: "Name", field: "name", headerSort: true },
       { title: "ID", field: "unique_id", headerSort: true, width: 160 },
       { title: "Inputs", field: "inputs", headerSort: true, hozAlign: "right", width: 80 },
@@ -876,13 +866,17 @@ function initControllerTable(rows) {
           const editBtn = e.target && e.target.closest ? e.target.closest(".edit-row") : null;
           const deleteBtn = e.target && e.target.closest ? e.target.closest(".delete-row") : null;
           if (editBtn) {
-            const index = findControllerIndex(data);
+            const index = Number.isInteger(data.controller_index)
+              ? data.controller_index
+              : findControllerIndex(data);
             if (index >= 0) {
               openEditor(index);
             }
           }
           if (deleteBtn) {
-            const index = findControllerIndex(data);
+            const index = Number.isInteger(data.controller_index)
+              ? data.controller_index
+              : findControllerIndex(data);
             if (index >= 0) {
               deleteController(index);
             }
@@ -895,15 +889,12 @@ function initControllerTable(rows) {
         return;
       }
       const data = row.getData();
-      const index = findControllerIndex(data);
+      const index = Number.isInteger(data.controller_index)
+        ? data.controller_index
+        : findControllerIndex(data);
       if (index >= 0) {
         openEditor(index);
       }
-    },
-    rowSelectionChanged: (data) => {
-      state.selection.clear();
-      data.forEach((row) => state.selection.add(normalizeControllerKey(row.controller)));
-      updateBulkBar();
     },
   });
 }
@@ -921,31 +912,40 @@ function renderControllers(reset = true) {
     return;
   }
   if (reset) {
+    state.filteredControllers = sortControllers(state.controllers.filter(controllerMatchesFilters));
+    if (controllerTabulator) {
+      if (!state.controllers.length) {
+        controllerTabulator.destroy();
+        controllerTabulator = null;
+        controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers configured yet.</div>";
+      } else if (!state.filteredControllers.length) {
+        controllerTabulator.destroy();
+        controllerTabulator = null;
+        controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers match the current filters.</div>";
+      } else {
+        controllerTabulator.setData(state.filteredControllers.map(buildControllerRow));
+      }
+      return;
+    }
     controllerTable.innerHTML = "";
     if (!state.controllers.length) {
       controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers configured yet.</div>";
-      updateBulkBar();
       return;
     }
-    state.filteredControllers = sortControllers(state.controllers.filter(controllerMatchesFilters));
     if (!state.filteredControllers.length) {
       controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers match the current filters.</div>";
-      updateBulkBar();
       return;
     }
     initControllerTable(state.filteredControllers);
-    updateBulkBar();
     return;
   }
 
   if (!state.filteredControllers.length) {
     controllerTable.innerHTML = "<div class=\"controller-empty\">No controllers match the current filters.</div>";
-    updateBulkBar();
     return;
   }
 
   refreshControllerTable();
-  updateBulkBar();
 }
 
 function openEditor(index) {
@@ -959,14 +959,15 @@ function openEditor(index) {
 
   initCurveEditors();
   const circadian = controller && controller.circadian ? controller.circadian : {};
+  const isNewController = !controller;
   if (circadianToggle) {
-    circadianToggle.checked = Boolean(circadian.enabled);
+    circadianToggle.checked = isNewController ? true : Boolean(circadian.enabled);
   }
   if (useMasterBrightnessToggle) {
-    useMasterBrightnessToggle.checked = Boolean(circadian.use_master_brightness);
+    useMasterBrightnessToggle.checked = isNewController ? true : Boolean(circadian.use_master_brightness);
   }
   if (useMasterColorToggle) {
-    useMasterColorToggle.checked = Boolean(circadian.use_master_color_temp);
+    useMasterColorToggle.checked = isNewController ? true : Boolean(circadian.use_master_color_temp);
   }
   if (solarBrightnessToggle) {
     solarBrightnessToggle.checked = circadian.solar_shift_brightness !== false;
@@ -979,7 +980,7 @@ function openEditor(index) {
     const controllerEnabled = controller && typeof controller.weather_enabled === "boolean"
       ? controller.weather_enabled
       : legacyMasterEnabled;
-    weatherEnabledToggle.checked = controllerEnabled;
+    weatherEnabledToggle.checked = isNewController ? true : controllerEnabled;
   }
   const sleepCfg = controller && typeof controller.sleep === "object" ? controller.sleep : {};
   const sleepUseMaster = sleepUseMasterToggle ? sleepUseMasterToggle.checked : true;
@@ -1031,25 +1032,35 @@ function openEditor(index) {
   toggleCircadianFields();
   updateSleepOverrides();
   updateWakeupOverrides();
-  editorCustomBrightness = (circadian.brightness_curve || curveDefaults.brightness).map((point) => ({ ...point }));
-  editorCustomColorTemp = (circadian.color_temp_curve || curveDefaults.color_temp).map((point) => ({ ...point }));
+  const masterBrightnessCurvePoints = state.master && Array.isArray(state.master.brightness_curve)
+    ? state.master.brightness_curve
+    : curveDefaults.brightness;
+  const masterColorCurvePoints = state.master && Array.isArray(state.master.color_temp_curve)
+    ? state.master.color_temp_curve
+    : curveDefaults.color_temp;
+  editorCustomBrightness = (isNewController ? masterBrightnessCurvePoints : (circadian.brightness_curve || curveDefaults.brightness))
+    .map((point) => ({ ...point }));
+  editorCustomColorTemp = (isNewController ? masterColorCurvePoints : (circadian.color_temp_curve || curveDefaults.color_temp))
+    .map((point) => ({ ...point }));
   editorBrightnessEnabled = circadian.brightness_enabled !== false;
   editorColorTempEnabled = circadian.color_temp_enabled !== false;
-  lastUseMasterBrightness = Boolean(circadian.use_master_brightness);
-  lastUseMasterColor = Boolean(circadian.use_master_color_temp);
+  lastUseMasterBrightness = isNewController ? true : Boolean(circadian.use_master_brightness);
+  lastUseMasterColor = isNewController ? true : Boolean(circadian.use_master_color_temp);
   updateEditorCurveUsage();
 
-  if (lightSearch) {
-    lightSearch.value = "";
-  }
+  editor.classList.remove("hidden");
+  document.body.classList.add("editor-open");
+  requestAnimationFrame(() => {
+    syncLightTables();
+  });
   currentSelectedLights = Array.isArray(controller && controller.input_lights) ? controller.input_lights.slice() : [];
-  renderLightLists(currentSelectedLights);
-  updateLimitBoundsFromSelection({ syncValues: false });
+  requestAnimationFrame(() => {
+    renderLightLists(currentSelectedLights);
+    updateLimitBoundsFromSelection({ syncValues: false });
+  });
   applyLimitInputs(controller && controller.limits ? controller.limits : limitDefaults);
   updateCurveDisplayLimits();
   updateCurveOverlays();
-  editor.classList.remove("hidden");
-  document.body.classList.add("editor-open");
   if (brightnessCurve) {
     requestAnimationFrame(() => {
       brightnessCurve.resize();
@@ -1063,9 +1074,6 @@ function openEditor(index) {
 function closeEditor() {
   editor.classList.add("hidden");
   document.body.classList.remove("editor-open");
-  if (lightSearch) {
-    lightSearch.value = "";
-  }
   if (circadianToggle) {
     circadianToggle.checked = false;
   }
@@ -1117,11 +1125,11 @@ function closeEditor() {
     colorTempCurve.setPoints(curveDefaults.color_temp);
   }
   form.reset();
-  if (availableList) {
-    availableList.innerHTML = "";
+  if (availableTabulator) {
+    availableTabulator.clearData();
   }
-  if (selectedList) {
-    selectedList.innerHTML = "";
+  if (selectedTabulator) {
+    selectedTabulator.clearData();
   }
   errorText.textContent = "";
   state.editingIndex = null;
@@ -1135,95 +1143,358 @@ function closeEditor() {
   currentSelectedLights = [];
 }
 
+function buildLightRow(light, inUse = false, inUseBy = "") {
+  return {
+    name: light.name || light.entity_id,
+    entity_id: light.entity_id,
+    in_use: inUse,
+    in_use_by: inUseBy || "",
+  };
+}
+
+function initLightTables(initialAvailable = [], initialSelected = []) {
+  if (!availableTableEl || !selectedTableEl) {
+    return;
+  }
+  if (typeof Tabulator === "undefined") {
+    availableTableEl.innerHTML = "<div class=\"controller-empty\">Tabulator failed to load.</div>";
+    selectedTableEl.innerHTML = "<div class=\"controller-empty\">Tabulator failed to load.</div>";
+    return;
+  }
+  if (!availableTabulator) {
+    availableTableReady = false;
+    availableTabulator = new Tabulator(availableTableEl, {
+      data: Array.isArray(initialAvailable) ? initialAvailable : [],
+      layout: "fitColumns",
+      renderVertical: "basic",
+      height: "320px",
+      reactiveData: false,
+      index: "entity_id",
+      selectable: true,
+      rowHeight: 40,
+      columnDefaults: { vertAlign: "middle" },
+      selectableCheck: (row) => !row.getData().in_use,
+      rowFormatter: (row) => {
+        const data = row.getData();
+        const inUse = data.in_use;
+        const el = row.getElement();
+        const picked = data.entity_id && availablePickedIds.has(data.entity_id);
+        el.classList.toggle("light-row-disabled", inUse);
+        el.classList.toggle("svt-row-picked", picked);
+        if (picked) {
+          setRowBackground(row, ROW_SELECTED_BG);
+        } else {
+          clearRowBackground(row);
+        }
+        if (inUse) {
+          el.setAttribute("title", `Used by: ${data.in_use_by || "another controller"}`);
+        } else {
+          el.removeAttribute("title");
+        }
+        if (inUse && row.isSelected()) {
+          row.deselect();
+        }
+        if (inUse) {
+          el.classList.remove("tabulator-selected");
+          el.setAttribute("aria-selected", "false");
+        }
+      },
+      columns: [
+        { title: "Name", field: "name", headerSort: true },
+        { title: "Entity ID", field: "entity_id", headerSort: true, width: 190 },
+      ],
+      rowClick: (e, row) => {
+        const data = row.getData();
+        if (data.in_use) {
+          return;
+        }
+        lastAvailableClickId = data.entity_id || null;
+        togglePickedRow(availableTabulator, row, availablePickedIds);
+        if (typeof row.toggleSelect === "function") {
+          row.toggleSelect();
+        }
+      },
+    });
+    availableTabulator.on("rowDblClick", (e, row) => {
+      const data = row.getData();
+      if (data.in_use) {
+        return;
+      }
+      const id = data.entity_id;
+      if (id) {
+        addSelectedLights([id]);
+      }
+    });
+    availableTabulator.on("rowMouseEnter", (e, row) => {
+      const data = row.getData();
+      if (!data.in_use) {
+        lastAvailableClickId = data.entity_id || null;
+        const el = row.getElement();
+        if (el && !el.classList.contains("svt-row-picked")) {
+          setRowBackground(row, ROW_HOVER_BG);
+        }
+      }
+    });
+    availableTabulator.on("rowMouseLeave", (e, row) => {
+      const el = row.getElement();
+      if (el && el.classList.contains("svt-row-picked")) {
+        setRowBackground(row, ROW_SELECTED_BG);
+      } else {
+        clearRowBackground(row);
+      }
+    });
+    availableTabulator.on("cellClick", (e, cell) => {
+      const row = cell.getRow();
+      const data = row ? row.getData() : null;
+      if (data && !data.in_use) {
+        lastAvailableClickId = data.entity_id || null;
+      }
+    });
+    availableTabulator.on("dataProcessed", () => {
+      clearInUseSelection(availableTabulator);
+    });
+    availableTabulator.on("renderComplete", () => {
+      clearInUseSelection(availableTabulator);
+    });
+    availableTabulator.on("tableBuilt", () => {
+      availableTableReady = true;
+      if (lastAvailableRows.length) {
+        availableTabulator.setData(lastAvailableRows);
+      }
+    });
+  }
+  if (!selectedTabulator) {
+    selectedTableReady = false;
+    selectedTabulator = new Tabulator(selectedTableEl, {
+      data: Array.isArray(initialSelected) ? initialSelected : [],
+      layout: "fitColumns",
+      renderVertical: "basic",
+      height: "320px",
+      reactiveData: false,
+      index: "entity_id",
+      selectable: true,
+      rowHeight: 40,
+      columnDefaults: { vertAlign: "middle" },
+      columns: [
+        { title: "Name", field: "name", headerSort: true },
+        { title: "Entity ID", field: "entity_id", headerSort: true, width: 190 },
+      ],
+      rowFormatter: (row) => {
+        const data = row.getData();
+        const el = row.getElement();
+        const picked = data.entity_id && selectedPickedIds.has(data.entity_id);
+        el.classList.toggle("svt-row-picked", picked);
+        if (picked) {
+          setRowBackground(row, ROW_SELECTED_BG);
+        } else {
+          clearRowBackground(row);
+        }
+      },
+      rowClick: (e, row) => {
+        const data = row.getData();
+        lastSelectedClickId = data.entity_id || null;
+        togglePickedRow(selectedTabulator, row, selectedPickedIds);
+        if (typeof row.toggleSelect === "function") {
+          row.toggleSelect();
+        }
+      },
+    });
+    selectedTabulator.on("rowDblClick", (e, row) => {
+      const data = row.getData();
+      const id = data ? data.entity_id : null;
+      if (id) {
+        removeSelectedLights([id]);
+      }
+    });
+    selectedTabulator.on("rowMouseEnter", (e, row) => {
+      const data = row.getData();
+      lastSelectedClickId = data ? data.entity_id || null : null;
+      const el = row.getElement();
+      if (el && !el.classList.contains("svt-row-picked")) {
+        setRowBackground(row, ROW_HOVER_BG);
+      }
+    });
+    selectedTabulator.on("rowMouseLeave", (e, row) => {
+      const el = row.getElement();
+      if (el && el.classList.contains("svt-row-picked")) {
+        setRowBackground(row, ROW_SELECTED_BG);
+      } else {
+        clearRowBackground(row);
+      }
+    });
+    selectedTabulator.on("cellClick", (e, cell) => {
+      const row = cell.getRow();
+      const data = row ? row.getData() : null;
+      if (data) {
+        lastSelectedClickId = data.entity_id || null;
+      }
+    });
+    selectedTabulator.on("tableBuilt", () => {
+      selectedTableReady = true;
+      if (lastSelectedRows.length) {
+        selectedTabulator.setData(lastSelectedRows);
+      }
+    });
+  }
+}
+
+function clearInUseSelection(table) {
+  if (!table) {
+    return;
+  }
+  table.getRows().forEach((row) => {
+    if (row.getData().in_use) {
+      if (row.isSelected()) {
+        row.deselect();
+      }
+      const el = row.getElement();
+      if (el) {
+        el.classList.remove("tabulator-selected");
+        el.setAttribute("aria-selected", "false");
+        el.style.removeProperty("background-color");
+        el.style.removeProperty("background");
+        el.style.removeProperty("box-shadow");
+        const cells = el.querySelectorAll(".tabulator-cell");
+        cells.forEach((cell) => {
+          cell.style.removeProperty("background-color");
+          cell.style.removeProperty("background");
+        });
+      }
+    }
+  });
+}
+
+function syncLightTables() {
+  if (availableTabulator && availableTableReady) {
+    availableTabulator.setData(lastAvailableRows);
+    availableTabulator.deselectRow();
+    clearInUseSelection(availableTabulator);
+  }
+  if (selectedTabulator && selectedTableReady) {
+    selectedTabulator.setData(lastSelectedRows);
+  }
+  scheduleLightTableRetry();
+}
+
+function scheduleLightTableRetry() {
+  if (lightTableRetryTimer) {
+    clearTimeout(lightTableRetryTimer);
+  }
+  const needsRetry = (availableTabulator && availableTableReady && lastAvailableRows.length && !availableTabulator.getData().length)
+    || (selectedTabulator && selectedTableReady && lastSelectedRows.length && !selectedTabulator.getData().length);
+  if (!needsRetry || lightTableRetry >= 6) {
+    lightTableRetry = 0;
+    return;
+  }
+  lightTableRetry += 1;
+  lightTableRetryTimer = setTimeout(() => {
+    if (availableTabulator && availableTableReady) {
+      availableTabulator.setData(lastAvailableRows);
+      availableTabulator.deselectRow();
+      clearInUseSelection(availableTabulator);
+    }
+    if (selectedTabulator && selectedTableReady) {
+      selectedTabulator.setData(lastSelectedRows);
+    }
+    scheduleLightTableRetry();
+  }, 120);
+}
+
 function renderLightLists(selected) {
-  if (!availableList || !selectedList) {
+  if (!availableTableEl || !selectedTableEl) {
     return;
   }
   if (Array.isArray(selected)) {
     currentSelectedLights = Array.from(new Set(selected));
   }
+  clearPickedIds(availablePickedIds);
+  clearPickedIds(selectedPickedIds);
   const selectedSet = new Set(currentSelectedLights);
   const used = new Set();
+  const usedBy = new Map();
   state.controllers.forEach((controller, idx) => {
     if (idx === state.editingIndex) return;
     (controller.input_lights || []).forEach((light) => used.add(light));
+    (controller.input_lights || []).forEach((light) => {
+      if (!usedBy.has(light)) {
+        usedBy.set(light, controller.name || controller.unique_id || "another controller");
+      }
+    });
   });
 
-  const query = lightSearch ? lightSearch.value.trim().toLowerCase() : "";
+  const availableRows = [];
+  const selectedRows = [];
 
-  availableList.innerHTML = "";
-  selectedList.innerHTML = "";
-
-  let availableVisible = 0;
   state.lights.forEach((light) => {
     if (selectedSet.has(light.entity_id)) {
       return;
     }
-    if (query) {
-      const haystack = `${light.name} ${light.entity_id}`.toLowerCase();
-      if (!haystack.includes(query)) {
-        return;
-      }
-    }
-
-    const wrapper = document.createElement("label");
-    wrapper.className = "light-item";
-
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = light.entity_id;
-    checkbox.disabled = used.has(light.entity_id);
-
-    const label = document.createElement("span");
-    label.textContent = `${light.name} (${light.entity_id})`;
-
-    if (checkbox.disabled) {
-      const note = document.createElement("span");
-      note.className = "light-note";
-      note.textContent = "In use";
-      wrapper.appendChild(checkbox);
-      wrapper.appendChild(label);
-      wrapper.appendChild(note);
-    } else {
-      wrapper.appendChild(checkbox);
-      wrapper.appendChild(label);
-    }
-
-    availableList.appendChild(wrapper);
-    availableVisible += 1;
+    availableRows.push(buildLightRow(light, used.has(light.entity_id), usedBy.get(light.entity_id)));
   });
 
   const lightById = new Map(state.lights.map((light) => [light.entity_id, light]));
   currentSelectedLights.forEach((entityId) => {
     const light = lightById.get(entityId) || { name: entityId, entity_id: entityId };
-    const wrapper = document.createElement("label");
-    wrapper.className = "light-item";
-
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = entityId;
-
-    const label = document.createElement("span");
-    label.textContent = `${light.name} (${light.entity_id})`;
-
-    wrapper.appendChild(checkbox);
-    wrapper.appendChild(label);
-    selectedList.appendChild(wrapper);
+    selectedRows.push(buildLightRow(light));
   });
 
+  lastAvailableRows = availableRows;
+  lastSelectedRows = selectedRows;
+  lastAvailableClickId = null;
+  lastSelectedClickId = null;
+  initLightTables(availableRows, selectedRows);
+  if (!availableTabulator || !selectedTabulator) {
+    return;
+  }
+
+  if (availableTableReady) {
+    availableTabulator.setData(availableRows);
+    availableTabulator.deselectRow();
+    clearInUseSelection(availableTabulator);
+    clearPickedRows(availableTabulator);
+    availableTabulator.redraw(true);
+  }
+  if (selectedTableReady) {
+    selectedTabulator.setData(selectedRows);
+    clearPickedRows(selectedTabulator);
+    selectedTabulator.redraw(true);
+  }
+
   if (availableCount) {
-    availableCount.textContent = String(availableVisible);
+    const availableUsable = availableRows.filter((row) => !row.in_use).length;
+    availableCount.textContent = `${availableUsable}/${availableRows.length}`;
+    availableCount.title = "Available / total entities in the list";
   }
   if (selectedCount) {
-    selectedCount.textContent = String(currentSelectedLights.length);
+    selectedCount.textContent = String(selectedRows.length);
+    selectedCount.title = "Entities selected for this controller";
   }
 }
 
-function collectCheckedIds(container) {
-  if (!container) {
+function collectSelectedIds(table) {
+  if (!table) {
     return [];
   }
-  return Array.from(container.querySelectorAll("input[type=checkbox]:checked")).map((input) => input.value);
+  if ((table === availableTabulator && !availableTableReady) || (table === selectedTabulator && !selectedTableReady)) {
+    return [];
+  }
+  const selected = table.getSelectedData().map((row) => row.entity_id);
+  if (selected.length) {
+    return selected;
+  }
+  if (table === availableTabulator && availablePickedIds.size) {
+    return Array.from(availablePickedIds);
+  }
+  if (table === selectedTabulator && selectedPickedIds.size) {
+    return Array.from(selectedPickedIds);
+  }
+  if (table === availableTabulator && lastAvailableClickId) {
+    return [lastAvailableClickId];
+  }
+  if (table === selectedTabulator && lastSelectedClickId) {
+    return [lastSelectedClickId];
+  }
+  return selected;
 }
 
 function addSelectedLights(ids) {
@@ -1699,6 +1970,11 @@ function buildOverlayBundle(monthSamples, current) {
 }
 
 function getBaseSunTimes(solar, circadian) {
+  const baseSunrise = circadian && Number.isFinite(circadian.base_sunrise) ? circadian.base_sunrise : null;
+  const baseSunset = circadian && Number.isFinite(circadian.base_sunset) ? circadian.base_sunset : null;
+  if (Number.isFinite(baseSunrise) && Number.isFinite(baseSunset)) {
+    return { baseSunrise, baseSunset };
+  }
   if (solar && Array.isArray(solar.months) && solar.months.length) {
     const march = solar.months.find((month) => month.month === 3);
     if (march && Number.isFinite(march.sunrise) && Number.isFinite(march.sunset)) {
@@ -1736,8 +2012,7 @@ function buildScaledSamples(points, baseSunrise, baseSunset, sunrise, sunset, mi
   const samples = [];
   const step = 2;
   for (let t = 0; t <= 1440; t += step) {
-    const shifted = (t - (dstOffset || 0) + 1440) % 1440;
-    const baseT = unscaleTime(shifted, baseSunrise, baseSunset, sunrise, sunset);
+    const baseT = unscaleTime(t, baseSunrise, baseSunset, sunrise, sunset);
     const v = sampleCurve(points, baseT, min, max);
     samples.push({ t, v });
   }
@@ -1793,8 +2068,7 @@ function computeCurrentValue(points, baseSunrise, baseSunset, sunrise, sunset, m
     const value = evaluateCurveBackend(points, tMinutes);
     return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : null;
   }
-  const shifted = (tMinutes - (dstOffset || 0) + 1440) % 1440;
-  const baseT = unscaleTime(shifted, baseSunrise, baseSunset, sunrise, sunset);
+  const baseT = unscaleTime(tMinutes, baseSunrise, baseSunset, sunrise, sunset);
   const value = evaluateCurveBackend(points, baseT);
   return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : null;
 }
@@ -1941,10 +2215,14 @@ async function saveConfig() {
 function validateForm() {
   const name = nameInput.value.trim();
   const uniqueId = uniqueInput.value.trim();
+  const normalizedId = normalizeId(uniqueId || name);
   const selectedLights = currentSelectedLights.slice();
   
   if (!name) {
     return "Name is required.";
+  }
+  if (!normalizedId) {
+    return "Name must include letters or numbers.";
   }
 
   const duplicateName = state.controllers.some((controller, idx) => {
@@ -1955,14 +2233,10 @@ function validateForm() {
     return "Name already exists.";
   }
 
-  if (!selectedLights.length) {
-    return "Select at least one input light.";
-  }
-
-  if (uniqueId) {
+  if (normalizedId) {
     const duplicateId = state.controllers.some((controller, idx) => {
       if (idx === state.editingIndex) return false;
-      return (controller.unique_id || "").trim().toLowerCase() === uniqueId.toLowerCase();
+      return normalizeId(controller.unique_id || controller.name || "") === normalizedId;
     });
     if (duplicateId) {
       return "Unique ID already exists.";
@@ -2103,47 +2377,6 @@ if (masterSolarColorToggle) {
     updateEditorCurveUsage();
   });
 }
-if (controllerSearch) {
-  controllerSearch.addEventListener("input", () => renderControllers(true));
-}
-if (controllerSort) {
-  controllerSort.addEventListener("change", () => renderControllers(true));
-}
-if (filterCircadian) {
-  filterCircadian.addEventListener("change", () => renderControllers(true));
-}
-if (filterMasterBrightness) {
-  filterMasterBrightness.addEventListener("change", () => renderControllers(true));
-}
-if (filterMasterColor) {
-  filterMasterColor.addEventListener("change", () => renderControllers(true));
-}
-if (bulkSelectAll) {
-  bulkSelectAll.addEventListener("click", () => {
-    state.filteredControllers.forEach((controller) => {
-      state.selection.add(normalizeControllerKey(controller));
-    });
-    renderControllers(true);
-  });
-}
-if (bulkClear) {
-  bulkClear.addEventListener("click", () => {
-    state.selection.clear();
-    renderControllers(true);
-  });
-}
-if (bulkActions) {
-  bulkActions.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLButtonElement)) {
-      return;
-    }
-    const action = target.dataset.bulk;
-    if (action) {
-      applyBulkAction(action);
-    }
-  });
-}
 if (brightnessMinInput && brightnessMaxInput) {
   brightnessMinInput.addEventListener("input", syncLimitInputs);
   brightnessMaxInput.addEventListener("input", syncLimitInputs);
@@ -2183,6 +2416,7 @@ form.addEventListener("submit", async (event) => {
 
   const name = nameInput.value.trim();
   const uniqueId = uniqueInput.value.trim();
+  const normalizedId = normalizeId(uniqueId || name);
   const selectedLights = currentSelectedLights.slice();
 
   const existing = state.editingIndex !== null ? state.controllers[state.editingIndex] : null;
@@ -2227,9 +2461,12 @@ form.addEventListener("submit", async (event) => {
       100
     );
   }
+  if (!uniqueId && uniqueInput) {
+    uniqueInput.value = normalizedId;
+  }
   const payload = {
     name,
-    unique_id: uniqueId || name,
+    unique_id: normalizedId,
     input_lights: selectedLights,
     weather_enabled: weatherEnabledToggle ? weatherEnabledToggle.checked : false,
     limits: readLimitInputs(),
@@ -2339,42 +2576,20 @@ async function saveRuntimeIntervals() {
   }
 }
 
-if (lightSearch) {
-  lightSearch.addEventListener("input", () => {
-    renderLightLists(currentSelectedLights);
-  });
-}
-
 if (addSelectedBtn) {
-  addSelectedBtn.addEventListener("click", () => {
-    addSelectedLights(collectCheckedIds(availableList));
-  });
+  addSelectedBtn.remove();
 }
 
 if (addAllBtn) {
-  addAllBtn.addEventListener("click", () => {
-    if (!availableList) {
-      return;
-    }
-    const ids = Array.from(availableList.querySelectorAll("input[type=checkbox]:not(:disabled)")).map(
-      (input) => input.value
-    );
-    addSelectedLights(ids);
-  });
+  addAllBtn.remove();
 }
 
 if (removeSelectedBtn) {
-  removeSelectedBtn.addEventListener("click", () => {
-    removeSelectedLights(collectCheckedIds(selectedList));
-  });
+  removeSelectedBtn.remove();
 }
 
 if (removeAllBtn) {
-  removeAllBtn.addEventListener("click", () => {
-    currentSelectedLights = [];
-    renderLightLists(currentSelectedLights);
-    updateLimitBoundsFromSelection();
-  });
+  removeAllBtn.remove();
 }
 
 

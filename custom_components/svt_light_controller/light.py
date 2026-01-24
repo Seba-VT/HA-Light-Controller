@@ -208,6 +208,13 @@ class SvtLightControllerManager:
                 continue
             entity = self._entities.pop(controller_id)
             await entity.async_remove()
+            entity_registry = er.async_get(self._hass)
+            if entity_registry.async_get(entity.entity_id):
+                entity_registry.async_remove(entity.entity_id)
+            device_registry = dr.async_get(self._hass)
+            device = device_registry.async_get_device(identifiers={(DOMAIN, controller_id)})
+            if device:
+                device_registry.async_remove_device(device.id)
 
 
 class SvtLightControllerLight(LightEntity):

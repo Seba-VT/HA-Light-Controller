@@ -1602,18 +1602,42 @@ def main() -> None:
     last_away_state: dict[str, dict] = {}
     away_state: dict[str, dict] = {}
     away_window_cache: dict[str, dict] = {}
+    away_refresh: dict[str, float] = {}
     last_weather_debug: dict[str, dict] = {}
     last_sleep_state: dict[str, dict] = {}
     wakeup_state: dict[str, dict] = {}
-    config_cache = {"mtime": None, "controllers": [], "master": {}}
+    config_cache = {"mtime": None, "controllers": [], "master": {}, "controller_ids": set()}
     sun_cache = {"fetched": 0.0, "attrs": None}
     ha_config_cache = {"fetched": 0.0, "config": None}
     weather_cache = {"fetched": 0.0, "values": {}}
     runtime_cache = _read_runtime_payload()
+    pending_retained_clear: set[str] = set()
     for controller_id, mode in runtime_cache.get("modes", {}).items():
         if isinstance(controller_id, str):
             last_mode_state[controller_id] = {"mode": _normalize_mode(mode)}
 
+
+    def _clear_retained_topics(controller_id: str) -> None:
+        topics = (
+            f"svtlc/{controller_id}/inputs",
+            f"svtlc/{controller_id}/inputs/status",
+            f"svtlc/{controller_id}/output",
+            f"svtlc/{controller_id}/mode",
+            f"svtlc/{controller_id}/limits",
+            f"svtlc/{controller_id}/circadian",
+            f"svtlc/{controller_id}/away",
+        )
+        for topic in topics:
+            client.publish(topic, payload=b"", qos=0, retain=True)
+
+    def _flush_retained_clears() -> None:
+        if not pending_retained_clear:
+            return
+        if not client or not client.is_connected():
+            return
+        for controller_id in list(pending_retained_clear):
+            _clear_retained_topics(controller_id)
+            pending_retained_clear.discard(controller_id)
 
     def _load_controller_cache() -> tuple[list[dict], dict]:
         try:
@@ -1626,8 +1650,21 @@ def main() -> None:
             payload = _load_controllers_config()
             config_cache["controllers"] = payload.get("controllers", [])
             config_cache["master"] = payload.get("master", {})
+            new_ids = {
+                _normalize_controller_id((controller.get("unique_id") or controller.get("name") or "").strip())
+                for controller in config_cache["controllers"]
+                if isinstance(controller, dict)
+            }
+            prev_ids = config_cache.get("controller_ids", set()) or set()
+            removed = prev_ids - new_ids
+            for controller_id in removed:
+                pending_retained_clear.add(controller_id)
+            config_cache["controller_ids"] = new_ids
 
         return config_cache.get("controllers", []), config_cache.get("master", {})
+
+    def _request_startup_cleanup() -> None:
+        pending_retained_clear.clear()
 
     def _get_sun_attrs() -> dict | None:
         now_ts = time.time()
@@ -1756,6 +1793,7 @@ def main() -> None:
         smooth_ct: int | None,
         brightness_enabled: bool,
         color_temp_enabled: bool,
+        refresh_seconds: int,
     ) -> None:
         cfg = _normalize_away_config(master_cfg)
         now = datetime.now().astimezone()
@@ -1821,7 +1859,9 @@ def main() -> None:
             )
             if brightness is not None or color_payload:
                 last = last_circadian.get(controller_id, {})
-                if last.get("brightness") != brightness or last.get("color_temp") != smooth_ct:
+                last_ts = away_refresh.get(controller_id, 0.0)
+                refresh_due = (now_ts - float(last_ts)) >= float(refresh_seconds)
+                if refresh_due or last.get("brightness") != brightness or last.get("color_temp") != smooth_ct:
                     _publish_light_command(
                         client,
                         controller_id,
@@ -1831,6 +1871,7 @@ def main() -> None:
                         only_on=False,
                     )
                     last_circadian[controller_id] = {"brightness": brightness, "color_temp": smooth_ct}
+                    away_refresh[controller_id] = now_ts
 
         away_payload = {
             "active": True,
@@ -2479,6 +2520,7 @@ def main() -> None:
                     smooth_ct,
                     bool(brightness_enabled),
                     bool(color_temp_enabled),
+                    circadian_interval,
                 )
                 continue
             away_state.pop(controller_id, None)
@@ -2557,6 +2599,12 @@ def main() -> None:
         client.subscribe(TOPIC_LIMITS_SET)
         client.subscribe(TOPIC_MODE_SET)
 
+    def on_disconnect(client, userdata, rc):
+        if rc != 0:
+            logger.warning("MQTT disconnected (rc=%s). Reconnecting...", rc)
+        else:
+            logger.info("MQTT disconnected.")
+
     def on_message(client, userdata, msg):
         topic = msg.topic
         parts = topic.split("/")
@@ -2565,6 +2613,17 @@ def main() -> None:
 
         controller_id = parts[1]
         suffix = parts[2]
+        if msg.retain:
+            controllers, _ = _load_controller_cache()
+            known_ids = {
+                _normalize_controller_id((controller.get("unique_id") or controller.get("name") or "").strip())
+                for controller in controllers
+                if isinstance(controller, dict)
+            }
+            if controller_id not in known_ids:
+                _clear_retained_topics(controller_id)
+                logger.warning("Cleared retained MQTT topics for unknown controller %s", controller_id)
+                return
 
         if suffix == "circadian" and len(parts) > 3 and parts[3] == "set":
             payload = _parse_payload(msg.payload)
@@ -2757,6 +2816,7 @@ def main() -> None:
                         smooth_ct,
                         bool(brightness_enabled),
                         bool(color_temp_enabled),
+                        circadian_interval,
                     )
                 else:
                     away_state.pop(controller_id, None)
@@ -3069,6 +3129,9 @@ def main() -> None:
             ),
             None,
         )
+        if not controller_cfg:
+            logger.warning("Ignoring inputs for unknown controller %s (stale retained MQTT data?)", controller_id)
+            return
         if controller_cfg:
             prev_state = last_output.get(controller_id, {}).get("state")
             mode_value = _normalize_mode(
@@ -3179,6 +3242,7 @@ def main() -> None:
     client = mqtt.Client()
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_disconnect = on_disconnect
 
     if username and password:
         client.username_pw_set(username, password)
@@ -3189,9 +3253,18 @@ def main() -> None:
         try:
             client.connect(host, port, 60)
             client.loop_start()
+            # Allow time for initial connect without thrashing reconnects.
+            for _ in range(50):
+                if client.is_connected():
+                    break
+                time.sleep(0.1)
+            _request_startup_cleanup()
+            _flush_retained_clears()
             while True:
                 if not client.is_connected():
-                    break
+                    time.sleep(1)
+                    continue
+                _flush_retained_clears()
                 wakeup_active = _circadian_tick()
                 runtime = _read_runtime_payload()
                 circadian_interval = runtime.get("circadian_interval", circadian_interval)
@@ -3207,9 +3280,9 @@ def main() -> None:
                         time.sleep(min(1.0, remaining))
                 else:
                     time.sleep(sleep_seconds)
-            client.loop_stop()
         except Exception as exc:  # noqa: BLE001
             logger.error("MQTT error: %s", exc)
+            client.loop_stop()
             time.sleep(5)
 
 

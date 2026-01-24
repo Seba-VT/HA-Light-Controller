@@ -107,6 +107,9 @@ class SvtLightControllerSwitchManager:
                 continue
             entity = self._entities.pop(entity_id)
             await entity.async_remove()
+            entity_registry = er.async_get(self._hass)
+            if entity_registry.async_get(entity.entity_id):
+                entity_registry.async_remove(entity.entity_id)
 
 
 class SvtLightControllerCircadianSwitch(SwitchEntity):
