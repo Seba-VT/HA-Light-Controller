@@ -2298,9 +2298,12 @@ def main() -> None:
                 color_temp_enabled,
             )
         else:
-            smooth_brightness, smooth_ct = raw_brightness, raw_ct
-            last_smoothed.pop(controller_id, None)
-            last_smooth_time.pop(controller_id, None)
+            # Start at the current weather-adjusted targets so "turn on"
+            # uses the correct values without a jump.
+            smooth_brightness = weather_brightness if circadian_enabled else raw_brightness
+            smooth_ct = weather_ct if circadian_enabled else raw_ct
+            last_smoothed[controller_id] = {"brightness": smooth_brightness, "color_temp": smooth_ct}
+            last_smooth_time[controller_id] = time.time()
 
         return (
             raw_brightness,
@@ -3091,7 +3094,18 @@ def main() -> None:
             return
 
         payload = _parse_payload(msg.payload)
+        prev_states = last_inputs.get(controller_id, {})
         states = payload.get("states", {}) if isinstance(payload, dict) else {}
+        newly_available = []
+        if isinstance(states, dict):
+            for entity_id, value in states.items():
+                if not isinstance(value, dict):
+                    continue
+                if _is_unavailable(value):
+                    continue
+                prev_value = prev_states.get(entity_id) if isinstance(prev_states, dict) else None
+                if not isinstance(prev_value, dict) or _is_unavailable(prev_value):
+                    newly_available.append(entity_id)
         last_inputs[controller_id] = states
         if isinstance(states, dict) and states:
             total_inputs = len(states)
@@ -3206,6 +3220,55 @@ def main() -> None:
             "effect": effect,
         }
         output_payload.update(color_payload)
+
+        if newly_available:
+            desired = last_output.get(controller_id) if isinstance(last_output.get(controller_id), dict) else None
+            desired_state = desired.get("state") if desired else output_state
+            if desired_state == "on":
+                _publish_input_command(client, controller_id, "turn_on_inputs", newly_available)
+                desired_brightness = desired.get("brightness") if desired else output_brightness
+                desired_effect = desired.get("effect") if desired else None
+                desired_color = {}
+                if desired:
+                    for key in (
+                        "hs_color",
+                        "rgb_color",
+                        "rgbw_color",
+                        "rgbww_color",
+                        "xy_color",
+                        "color_temp",
+                        "color_temp_kelvin",
+                        "color_mode",
+                    ):
+                        if key in desired:
+                            desired_color[key] = desired[key]
+                else:
+                    desired_color = _median_color_from_inputs(states)
+                if isinstance(desired_effect, str) and desired_effect:
+                    _publish_input_command(
+                        client,
+                        controller_id,
+                        "set_effect_inputs",
+                        newly_available,
+                        effect=desired_effect,
+                    )
+                if desired_color:
+                    _publish_input_command(
+                        client,
+                        controller_id,
+                        "set_color_inputs",
+                        newly_available,
+                        desired_brightness,
+                        color_payload=desired_color,
+                    )
+                elif desired_brightness is not None:
+                    _publish_input_command(
+                        client,
+                        controller_id,
+                        "set_brightness_inputs",
+                        newly_available,
+                        desired_brightness,
+                    )
 
         if "rgb_color" in output_payload and isinstance(output_payload["rgb_color"], list) and len(output_payload["rgb_color"]) == 3:
             r, g, b = output_payload["rgb_color"]

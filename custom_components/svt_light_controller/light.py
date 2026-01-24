@@ -216,6 +216,16 @@ class SvtLightControllerManager:
             if device:
                 device_registry.async_remove_device(device.id)
 
+        # Ensure entity_ids use the svtlc_ prefix when possible.
+        entity_registry = er.async_get(self._hass)
+        for controller_id in next_ids:
+            entity_id = entity_registry.async_get_entity_id("light", DOMAIN, controller_id)
+            if not entity_id:
+                continue
+            desired = f"light.{controller_id}"
+            if entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(entity_id, new_entity_id=desired)
+
 
 class SvtLightControllerLight(LightEntity):
     """Virtual light representing a controller output."""
@@ -231,6 +241,7 @@ class SvtLightControllerLight(LightEntity):
         self._attr_name = name
         self._device_name = f"SVTLC {name}"
         self._controller_id = _normalize_unique_id(unique_id)
+        self._attr_object_id = self._controller_id
         self._attr_unique_id = self._controller_id
         self._topic_base = f"svtlc/{self._controller_id}"
         self._topic_inputs = f"{self._topic_base}/inputs"
