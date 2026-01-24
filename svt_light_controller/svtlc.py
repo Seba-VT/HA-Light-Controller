@@ -1597,6 +1597,7 @@ def main() -> None:
     last_circadian_state: dict[str, dict] = {}
     last_limits_state: dict[str, dict] = {}
     last_mode_state: dict[str, dict] = {}
+    last_output_state_for_smooth: dict[str, str] = {}
     last_smoothed: dict[str, dict] = {}
     last_smooth_time: dict[str, float] = {}
     last_away_state: dict[str, dict] = {}
@@ -2229,7 +2230,9 @@ def main() -> None:
             output_state, _ = _state_from_inputs(use_states) if use_states else ("off", None)
 
         smoothing_cfg = _normalize_smoothing_config(master if isinstance(master, dict) else {})
-        apply_smoothing = circadian_enabled and output_state == "on" and not force_reset
+        turned_on = output_state == "on" and last_output_state_for_smooth.get(controller_id) != "on"
+        effective_force_reset = force_reset or turned_on
+        apply_smoothing = circadian_enabled and output_state == "on" and not effective_force_reset
 
         weather_reduction_pct = None
         weather_brightness = raw_brightness
@@ -2364,6 +2367,7 @@ def main() -> None:
             state_topic = TOPIC_CIRCADIAN_STATE.format(controller_id)
             client.publish(state_topic, json.dumps(state_payload), qos=0, retain=True)
 
+        last_output_state_for_smooth[controller_id] = output_state
         return smooth_brightness, smooth_ct, circadian_enabled, output_state, brightness_enabled, color_temp_enabled
 
     def _get_circadian_values(controller: dict, master: dict) -> tuple[int | None, int | None]:
