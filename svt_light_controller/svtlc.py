@@ -3152,7 +3152,8 @@ def main() -> None:
                 last_mode_state.get(controller_id, {}).get("mode")
                 or (controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
             )
-            if output_state == "on" and prev_state != "on":
+            turned_on = output_state == "on" and prev_state != "on"
+            if turned_on:
                 if mode_value == "Away":
                     _set_circadian_flags(
                         client,
@@ -3194,7 +3195,7 @@ def main() -> None:
                 master,
                 states=states,
                 output_state_override=output_state,
-                force_reset=output_state != "on",
+                force_reset=output_state != "on" or turned_on,
             )
             mode_value = _normalize_mode(
                 last_mode_state.get(controller_id, {}).get("mode")
