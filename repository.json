@@ -1,14 +1,5 @@
-﻿{
+{
   "name": "SVT Light Controller Add-ons",
   "url": "https://github.com/Seba-VT/HA-Light-Controller",
-  "maintainer": "Seba-VT",
-  "addons": [
-    {
-      "name": "SVT Light Controller",
-      "slug": "svt_light_controller",
-      "description": "MQTT-based controller runner with web UI.",
-      "url": "https://github.com/Seba-VT/HA-Light-Controller",
-      "logo": "svt_light_controller/logo.png"
-    }
-  ]
+  "maintainer": "Seba-VT"
 }
