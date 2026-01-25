@@ -1442,6 +1442,11 @@ def _publish_input_command(
             if entry.get("controller_id") == controller_id:
                 RETRY_PENDING.pop(key, None)
         _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect)
+        if command == "turn_on_inputs" and targets:
+            entry = last_on_command.setdefault(controller_id, {})
+            now_ts = time.time()
+            for target in targets:
+                entry[target] = now_ts
         if command == "set_color_inputs" and color_payload:
             entry = last_color_command.setdefault(controller_id, {})
             payload_copy = dict(color_payload)
@@ -1608,6 +1613,7 @@ def main() -> None:
     last_smoothed: dict[str, dict] = {}
     last_smooth_time: dict[str, float] = {}
     last_color_command: dict[str, dict[str, dict]] = {}
+    last_on_command: dict[str, dict[str, float]] = {}
     last_away_state: dict[str, dict] = {}
     away_state: dict[str, dict] = {}
     away_window_cache: dict[str, dict] = {}
@@ -2917,7 +2923,7 @@ def main() -> None:
                         color_temp_enabled=False,
                         persist=True,
                     )
-                _publish_input_command(client, controller_id, "turn_off_inputs", _targets_on(states))
+                _publish_input_command(client, controller_id, "turn_off_inputs", _targets_all(states))
                 if controller_cfg:
                     _publish_circadian_targets(
                         controller_id,
@@ -3129,6 +3135,9 @@ def main() -> None:
                 mode_changed = prev_mode != current_mode
                 ct_changed = prev_ct != current_ct and (prev_ct is not None or current_ct is not None)
                 if not (mode_changed or ct_changed):
+                    continue
+                on_stamp = last_on_command.get(controller_id, {}).get(entity_id)
+                if on_stamp and (time.time() - float(on_stamp)) <= 5.0:
                     continue
                 recent = last_color_command.get(controller_id, {}).get(entity_id)
                 if recent:
