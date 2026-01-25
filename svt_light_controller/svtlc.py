@@ -46,6 +46,8 @@ RETRY_TOLERANCES = {
     "rgb": 3,
     "xy": 0.01,
 }
+LAST_COLOR_COMMAND: dict[str, dict[str, dict]] = {}
+LAST_ON_COMMAND: dict[str, dict[str, float]] = {}
 
 
 def _load_options() -> dict:
@@ -1443,12 +1445,12 @@ def _publish_input_command(
                 RETRY_PENDING.pop(key, None)
         _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect)
         if command == "turn_on_inputs" and targets:
-            entry = last_on_command.setdefault(controller_id, {})
+            entry = LAST_ON_COMMAND.setdefault(controller_id, {})
             now_ts = time.time()
             for target in targets:
                 entry[target] = now_ts
         if command == "set_color_inputs" and color_payload:
-            entry = last_color_command.setdefault(controller_id, {})
+            entry = LAST_COLOR_COMMAND.setdefault(controller_id, {})
             payload_copy = dict(color_payload)
             payload_copy.pop("__prefer_color_temp", None)
             stamp = {"ts": time.time(), "payload": payload_copy}
@@ -1612,8 +1614,6 @@ def main() -> None:
     last_output_state_for_smooth: dict[str, str] = {}
     last_smoothed: dict[str, dict] = {}
     last_smooth_time: dict[str, float] = {}
-    last_color_command: dict[str, dict[str, dict]] = {}
-    last_on_command: dict[str, dict[str, float]] = {}
     last_away_state: dict[str, dict] = {}
     away_state: dict[str, dict] = {}
     away_window_cache: dict[str, dict] = {}
@@ -3136,16 +3136,16 @@ def main() -> None:
                 ct_changed = prev_ct != current_ct and (prev_ct is not None or current_ct is not None)
                 if not (mode_changed or ct_changed):
                     continue
-                on_stamp = last_on_command.get(controller_id, {}).get(entity_id)
+                on_stamp = LAST_ON_COMMAND.get(controller_id, {}).get(entity_id)
                 if on_stamp and (time.time() - float(on_stamp)) <= 5.0:
                     continue
-                recent = last_color_command.get(controller_id, {}).get(entity_id)
+                recent = LAST_COLOR_COMMAND.get(controller_id, {}).get(entity_id)
                 if recent:
                     age = time.time() - float(recent.get("ts", 0.0))
                     if age <= 5.0 and _color_payload_matches(value, recent.get("payload", {})):
                         continue
                     if age > 10.0:
-                        last_color_command.get(controller_id, {}).pop(entity_id, None)
+                        LAST_COLOR_COMMAND.get(controller_id, {}).pop(entity_id, None)
                 manual_color_change = True
         last_inputs[controller_id] = states
         if isinstance(states, dict) and states:
