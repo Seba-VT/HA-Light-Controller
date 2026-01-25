@@ -31,6 +31,9 @@ _LOGGER = logging.getLogger(__name__)
 def _normalize_unique_id(raw_unique_id: str) -> str:
     return f"svtlc_{raw_unique_id.strip().lower().replace(' ', '_')}"
 
+def _controller_slug(controller_id: str) -> str:
+    return controller_id[len("svtlc_") :] if controller_id.startswith("svtlc_") else controller_id
+
 
 def _parse_json_payload(payload) -> dict | None:
     if isinstance(payload, (bytes, bytearray)):
@@ -147,6 +150,7 @@ class SvtLightControllerLimitNumber(NumberEntity):
         self._input_lights = input_lights
         self._hass = hass
         self._controller_id = _normalize_unique_id(unique_id)
+        self._controller_slug = _controller_slug(self._controller_id)
         self._key = key
         self._device_name = f"SVTLC {name}"
         label = {
@@ -164,6 +168,7 @@ class SvtLightControllerLimitNumber(NumberEntity):
             CONF_WEATHER_MIN_KELVIN: "mdi:weather-cloudy",
         }
         self._attr_unique_id = f"{self._controller_id}_{key}"
+        self._attr_object_id = f"svtlc_{key}_{self._controller_slug}"
         self._attr_name = label
         self._attr_icon = icons.get(key)
         self._topic_state = f"svtlc/{self._controller_id}/limits"
@@ -239,6 +244,7 @@ class SvtLightControllerLimitNumber(NumberEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._ensure_device_link()
+        self._ensure_entity_id()
         if self._key in (CONF_CT_MIN_KELVIN, CONF_CT_MAX_KELVIN):
             min_k, max_k = self._calc_ct_bounds()
             self._attr_native_min_value = min_k
@@ -341,3 +347,12 @@ class SvtLightControllerLimitNumber(NumberEntity):
                 entity_registry.async_update_entity(self.entity_id, device_id=device.id)
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Failed to link SVTLC device")
+
+    def _ensure_entity_id(self) -> None:
+        try:
+            entity_registry = er.async_get(self._hass)
+            desired = f"number.{self._attr_object_id}"
+            if self.entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(self.entity_id, new_entity_id=desired)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to update SVTLC number entity_id")

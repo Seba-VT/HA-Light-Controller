@@ -20,6 +20,9 @@ _LOGGER = logging.getLogger(__name__)
 def _normalize_unique_id(raw_unique_id: str) -> str:
     return f"svtlc_{raw_unique_id.strip().lower().replace(' ', '_')}"
 
+def _controller_slug(controller_id: str) -> str:
+    return controller_id[len("svtlc_") :] if controller_id.startswith("svtlc_") else controller_id
+
 
 def _parse_json_payload(payload) -> dict | None:
     if isinstance(payload, (bytes, bytearray)):
@@ -129,9 +132,11 @@ class SvtLightControllerCircadianSwitch(SwitchEntity):
         self._input_lights = input_lights
         self._hass = hass
         self._controller_id = _normalize_unique_id(unique_id)
+        self._controller_slug = _controller_slug(self._controller_id)
         self._kind = kind
         self._device_name = f"SVTLC {name}"
         self._attr_unique_id = f"{self._controller_id}_circadian_{kind}"
+        self._attr_object_id = f"svtlc_circadian_{kind}_{self._controller_slug}"
         self._attr_name = f"Circadian {'Brightness' if kind == 'brightness' else 'Color Temp'}"
         self._attr_icon = "mdi:brightness-6" if kind == "brightness" else "mdi:thermometer"
         self._topic_state = f"svtlc/{self._controller_id}/circadian"
@@ -176,6 +181,7 @@ class SvtLightControllerCircadianSwitch(SwitchEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._ensure_device_link()
+        self._ensure_entity_id()
         self._unsub_mqtt = await mqtt.async_subscribe(
             self._hass,
             self._topic_state,
@@ -238,3 +244,12 @@ class SvtLightControllerCircadianSwitch(SwitchEntity):
                 entity_registry.async_update_entity(self.entity_id, device_id=device.id)
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Failed to link SVTLC device")
+
+    def _ensure_entity_id(self) -> None:
+        try:
+            entity_registry = er.async_get(self._hass)
+            desired = f"switch.{self._attr_object_id}"
+            if self.entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(self.entity_id, new_entity_id=desired)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to update SVTLC switch entity_id")

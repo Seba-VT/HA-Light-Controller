@@ -21,6 +21,9 @@ _LOGGER = logging.getLogger(__name__)
 def _normalize_unique_id(raw_unique_id: str) -> str:
     return f"svtlc_{raw_unique_id.strip().lower().replace(' ', '_')}"
 
+def _controller_slug(controller_id: str) -> str:
+    return controller_id[len("svtlc_") :] if controller_id.startswith("svtlc_") else controller_id
+
 
 def _parse_json_payload(payload) -> dict | None:
     if isinstance(payload, (bytes, bytearray)):
@@ -173,10 +176,12 @@ class SvtLightControllerCircadianSensor(SensorEntity):
         self._input_lights = input_lights
         self._hass = hass
         self._controller_id = _normalize_unique_id(unique_id)
+        self._controller_slug = _controller_slug(self._controller_id)
         self._kind = kind
         self._variant = variant
         self._device_name = f"SVTLC {name}"
         self._attr_unique_id = f"{self._controller_id}_circadian_{kind}_{variant}"
+        self._attr_object_id = f"svtlc_{kind}_{variant}_{self._controller_slug}"
         label = "Brightness" if kind == "brightness" else "Color Temp"
         if variant == "target":
             suffix = "Smoothed Target"
@@ -240,6 +245,7 @@ class SvtLightControllerCircadianSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._ensure_device_link()
+        self._ensure_entity_id()
         self._unsub_mqtt = await mqtt.async_subscribe(
             self._hass,
             self._topic_state,
@@ -303,6 +309,15 @@ class SvtLightControllerCircadianSensor(SensorEntity):
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Failed to link SVTLC device")
 
+    def _ensure_entity_id(self) -> None:
+        try:
+            entity_registry = er.async_get(self._hass)
+            desired = f"sensor.{self._attr_object_id}"
+            if self.entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(self.entity_id, new_entity_id=desired)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to update SVTLC sensor entity_id")
+
 
 class SvtLightControllerAwayStatusSensor(SensorEntity):
     """Read-only sensor entity for away mode status."""
@@ -319,8 +334,10 @@ class SvtLightControllerAwayStatusSensor(SensorEntity):
         self._input_lights = input_lights
         self._hass = hass
         self._controller_id = _normalize_unique_id(unique_id)
+        self._controller_slug = _controller_slug(self._controller_id)
         self._device_name = f"SVTLC {name}"
         self._attr_unique_id = f"{self._controller_id}_away_status"
+        self._attr_object_id = f"svtlc_away_status_{self._controller_slug}"
         self._attr_name = "Away Status"
         self._attr_icon = "mdi:home-export-outline"
         self._topic_state = f"svtlc/{self._controller_id}/away"
@@ -356,6 +373,7 @@ class SvtLightControllerAwayStatusSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._ensure_device_link()
+        self._ensure_entity_id()
         self._unsub_mqtt = await mqtt.async_subscribe(
             self._hass,
             self._topic_state,
@@ -421,6 +439,15 @@ class SvtLightControllerAwayStatusSensor(SensorEntity):
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Failed to link SVTLC device")
 
+    def _ensure_entity_id(self) -> None:
+        try:
+            entity_registry = er.async_get(self._hass)
+            desired = f"sensor.{self._attr_object_id}"
+            if self.entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(self.entity_id, new_entity_id=desired)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to update SVTLC away status entity_id")
+
 
 class SvtLightControllerInputsStatusSensor(SensorEntity):
     """Read-only sensor entity for input availability."""
@@ -437,8 +464,10 @@ class SvtLightControllerInputsStatusSensor(SensorEntity):
         self._input_lights = input_lights
         self._hass = hass
         self._controller_id = _normalize_unique_id(unique_id)
+        self._controller_slug = _controller_slug(self._controller_id)
         self._device_name = f"SVTLC {name}"
         self._attr_unique_id = f"{self._controller_id}_inputs_status"
+        self._attr_object_id = f"svtlc_inputs_status_{self._controller_slug}"
         self._attr_name = "Inputs Availability"
         self._attr_icon = "mdi:alert-circle-outline"
         self._topic_state = f"svtlc/{self._controller_id}/inputs/status"
@@ -474,6 +503,7 @@ class SvtLightControllerInputsStatusSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._ensure_device_link()
+        self._ensure_entity_id()
         self._unsub_mqtt = await mqtt.async_subscribe(
             self._hass,
             self._topic_state,
@@ -532,6 +562,15 @@ class SvtLightControllerInputsStatusSensor(SensorEntity):
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Failed to link SVTLC device")
 
+    def _ensure_entity_id(self) -> None:
+        try:
+            entity_registry = er.async_get(self._hass)
+            desired = f"sensor.{self._attr_object_id}"
+            if self.entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(self.entity_id, new_entity_id=desired)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to update SVTLC inputs status entity_id")
+
 
 class SvtLightControllerWeatherReductionSensor(SensorEntity):
     """Read-only sensor entity for weather reduction percent."""
@@ -548,8 +587,10 @@ class SvtLightControllerWeatherReductionSensor(SensorEntity):
         self._input_lights = input_lights
         self._hass = hass
         self._controller_id = _normalize_unique_id(unique_id)
+        self._controller_slug = _controller_slug(self._controller_id)
         self._device_name = f"SVTLC {name}"
         self._attr_unique_id = f"{self._controller_id}_circadian_weather_reduction"
+        self._attr_object_id = f"svtlc_weather_reduction_{self._controller_slug}"
         self._attr_name = "Weather Reduction"
         self._attr_icon = "mdi:weather-partly-cloudy"
         self._topic_state = f"svtlc/{self._controller_id}/circadian"
@@ -581,6 +622,7 @@ class SvtLightControllerWeatherReductionSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._ensure_device_link()
+        self._ensure_entity_id()
         self._unsub_mqtt = await mqtt.async_subscribe(
             self._hass,
             self._topic_state,
@@ -626,3 +668,12 @@ class SvtLightControllerWeatherReductionSensor(SensorEntity):
                 entity_registry.async_update_entity(self.entity_id, device_id=device.id)
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Failed to link SVTLC device")
+
+    def _ensure_entity_id(self) -> None:
+        try:
+            entity_registry = er.async_get(self._hass)
+            desired = f"sensor.{self._attr_object_id}"
+            if self.entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(self.entity_id, new_entity_id=desired)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to update SVTLC weather reduction entity_id")
