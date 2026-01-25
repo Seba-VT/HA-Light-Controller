@@ -1442,6 +1442,13 @@ def _publish_input_command(
             if entry.get("controller_id") == controller_id:
                 RETRY_PENDING.pop(key, None)
         _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect)
+        if command == "set_color_inputs" and color_payload:
+            entry = last_color_command.setdefault(controller_id, {})
+            payload_copy = dict(color_payload)
+            payload_copy.pop("__prefer_color_temp", None)
+            stamp = {"ts": time.time(), "payload": payload_copy}
+            for target in targets:
+                entry[target] = stamp
 
 
 def _publish_light_command(
@@ -1600,6 +1607,7 @@ def main() -> None:
     last_output_state_for_smooth: dict[str, str] = {}
     last_smoothed: dict[str, dict] = {}
     last_smooth_time: dict[str, float] = {}
+    last_color_command: dict[str, dict[str, dict]] = {}
     last_away_state: dict[str, dict] = {}
     away_state: dict[str, dict] = {}
     away_window_cache: dict[str, dict] = {}
@@ -3062,18 +3070,13 @@ def main() -> None:
                         last_mode_state[controller_id] = mode_payload
                         _publish_mode_state(client, controller_id, "Circadian")
                     wakeup_state.pop(controller_id, None)
-                if (
-                    "color_temp" in color_payload
-                    or "color_temp_kelvin" in color_payload
-                    or color_mode == "color_temp"
-                ):
-                    _set_circadian_flags(
-                        client,
-                        controller_id,
-                        last_circadian_settings,
-                        color_temp_enabled=False,
-                        persist=True,
-                    )
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    color_temp_enabled=False,
+                    persist=True,
+                )
                 color_targets = _targets_with_mode(states, color_mode, only_on=True)
                 _publish_input_command(
                     client,
@@ -3102,6 +3105,7 @@ def main() -> None:
         states = payload.get("states", {}) if isinstance(payload, dict) else {}
         newly_available = []
         external_on = []
+        manual_color_change = False
         if isinstance(states, dict):
             for entity_id, value in states.items():
                 if not isinstance(value, dict):
@@ -3116,6 +3120,24 @@ def main() -> None:
                 current_state = str(value.get("state", "")).strip().lower()
                 if prev_state != "on" and current_state == "on":
                     external_on.append(entity_id)
+                if current_state != "on":
+                    continue
+                prev_mode = prev_value.get("color_mode")
+                current_mode = value.get("color_mode")
+                prev_ct = _state_color_temp_kelvin(prev_value)
+                current_ct = _state_color_temp_kelvin(value)
+                mode_changed = prev_mode != current_mode
+                ct_changed = prev_ct != current_ct and (prev_ct is not None or current_ct is not None)
+                if not (mode_changed or ct_changed):
+                    continue
+                recent = last_color_command.get(controller_id, {}).get(entity_id)
+                if recent:
+                    age = time.time() - float(recent.get("ts", 0.0))
+                    if age <= 5.0 and _color_payload_matches(value, recent.get("payload", {})):
+                        continue
+                    if age > 10.0:
+                        last_color_command.get(controller_id, {}).pop(entity_id, None)
+                manual_color_change = True
         last_inputs[controller_id] = states
         if isinstance(states, dict) and states:
             total_inputs = len(states)
@@ -3165,6 +3187,14 @@ def main() -> None:
                 or (controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
             )
             turned_on = output_state == "on" and prev_state != "on"
+            if manual_color_change:
+                _set_circadian_flags(
+                    client,
+                    controller_id,
+                    last_circadian_settings,
+                    color_temp_enabled=False,
+                    persist=True,
+                )
             if turned_on:
                 if mode_value == "Away":
                     _set_circadian_flags(
