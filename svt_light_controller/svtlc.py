@@ -3156,6 +3156,8 @@ def main() -> None:
         if not controller_cfg:
             logger.warning("Ignoring inputs for unknown controller %s (stale retained MQTT data?)", controller_id)
             return
+        smooth_brightness = None
+        smooth_ct = None
         if controller_cfg:
             prev_state = last_output.get(controller_id, {}).get("state")
             mode_value = _normalize_mode(
@@ -3199,7 +3201,7 @@ def main() -> None:
                     color_temp_enabled=True,
                     persist=True,
                 )
-            _publish_circadian_targets(
+            smooth_brightness, smooth_ct, _, _, _, _ = _publish_circadian_targets(
                 controller_id,
                 controller_cfg,
                 master,
@@ -3281,50 +3283,55 @@ def main() -> None:
                         desired_brightness,
                     )
         if external_on:
-            if desired_state == "on":
-                desired_brightness = desired.get("brightness") if desired else output_brightness
-                desired_effect = desired.get("effect") if desired else None
-                desired_color = {}
-                if desired:
-                    for key in (
-                        "hs_color",
-                        "rgb_color",
-                        "rgbw_color",
-                        "rgbww_color",
-                        "xy_color",
-                        "color_temp",
-                        "color_temp_kelvin",
-                        "color_mode",
-                    ):
-                        if key in desired:
-                            desired_color[key] = desired[key]
-                if isinstance(desired_effect, str) and desired_effect:
-                    _publish_input_command(
-                        client,
-                        controller_id,
-                        "set_effect_inputs",
-                        external_on,
-                        effect=desired_effect,
-                    )
-                if desired_color:
-                    _publish_input_command(
-                        client,
-                        controller_id,
-                        "set_color_inputs",
-                        external_on,
-                        desired_brightness,
-                        color_payload=desired_color,
-                    )
-                elif desired_brightness is not None:
-                    _publish_input_command(
-                        client,
-                        controller_id,
-                        "set_brightness_inputs",
-                        external_on,
-                        desired_brightness,
-                    )
+            desired_state = "on"
+            desired_brightness = None
+            desired_effect = None
+            desired_color = {}
+            if mode_value == "Manual" and desired:
+                desired_brightness = desired.get("brightness")
+                desired_effect = desired.get("effect")
+                for key in (
+                    "hs_color",
+                    "rgb_color",
+                    "rgbw_color",
+                    "rgbww_color",
+                    "xy_color",
+                    "color_temp",
+                    "color_temp_kelvin",
+                    "color_mode",
+                ):
+                    if key in desired:
+                        desired_color[key] = desired[key]
             else:
-                _publish_input_command(client, controller_id, "turn_off_inputs", external_on)
+                desired_brightness = smooth_brightness if smooth_brightness is not None else output_brightness
+                if smooth_ct is not None:
+                    desired_color = {"color_temp_kelvin": smooth_ct, "color_mode": "color_temp"}
+            _publish_input_command(client, controller_id, "turn_on_inputs", external_on)
+            if isinstance(desired_effect, str) and desired_effect:
+                _publish_input_command(
+                    client,
+                    controller_id,
+                    "set_effect_inputs",
+                    external_on,
+                    effect=desired_effect,
+                )
+            if desired_color:
+                _publish_input_command(
+                    client,
+                    controller_id,
+                    "set_color_inputs",
+                    external_on,
+                    desired_brightness,
+                    color_payload=desired_color,
+                )
+            elif desired_brightness is not None:
+                _publish_input_command(
+                    client,
+                    controller_id,
+                    "set_brightness_inputs",
+                    external_on,
+                    desired_brightness,
+                )
 
         if "rgb_color" in output_payload and isinstance(output_payload["rgb_color"], list) and len(output_payload["rgb_color"]) == 3:
             r, g, b = output_payload["rgb_color"]
