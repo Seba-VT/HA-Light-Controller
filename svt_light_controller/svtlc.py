@@ -1313,34 +1313,34 @@ def _median_color_from_inputs(states: dict) -> dict:
 
     payload: dict = {}
     if hs_hues and hs_sats:
-        payload["hs_color"] = [statistics.median(hs_hues), statistics.median(hs_sats)]
+        payload["hs_color"] = [statistics.mean(hs_hues), statistics.mean(hs_sats)]
     if rgb_r and rgb_g and rgb_b:
         payload["rgb_color"] = [
-            int(statistics.median(rgb_r)),
-            int(statistics.median(rgb_g)),
-            int(statistics.median(rgb_b)),
+            int(statistics.mean(rgb_r)),
+            int(statistics.mean(rgb_g)),
+            int(statistics.mean(rgb_b)),
         ]
     if rgbw_r and rgbw_g and rgbw_b and rgbw_w:
         payload["rgbw_color"] = [
-            int(statistics.median(rgbw_r)),
-            int(statistics.median(rgbw_g)),
-            int(statistics.median(rgbw_b)),
-            int(statistics.median(rgbw_w)),
+            int(statistics.mean(rgbw_r)),
+            int(statistics.mean(rgbw_g)),
+            int(statistics.mean(rgbw_b)),
+            int(statistics.mean(rgbw_w)),
         ]
     if rgbww_r and rgbww_g and rgbww_b and rgbww_cw and rgbww_ww:
         payload["rgbww_color"] = [
-            int(statistics.median(rgbww_r)),
-            int(statistics.median(rgbww_g)),
-            int(statistics.median(rgbww_b)),
-            int(statistics.median(rgbww_cw)),
-            int(statistics.median(rgbww_ww)),
+            int(statistics.mean(rgbww_r)),
+            int(statistics.mean(rgbww_g)),
+            int(statistics.mean(rgbww_b)),
+            int(statistics.mean(rgbww_cw)),
+            int(statistics.mean(rgbww_ww)),
         ]
     if xy_x and xy_y:
-        payload["xy_color"] = [statistics.median(xy_x), statistics.median(xy_y)]
+        payload["xy_color"] = [statistics.mean(xy_x), statistics.mean(xy_y)]
     if ct_mireds:
-        payload["color_temp"] = int(statistics.median(ct_mireds))
+        payload["color_temp"] = int(statistics.mean(ct_mireds))
     if ct_kelvin:
-        payload["color_temp_kelvin"] = int(statistics.median(ct_kelvin))
+        payload["color_temp_kelvin"] = int(statistics.mean(ct_kelvin))
 
     if has_color_temp_mode and ("color_temp" in payload or "color_temp_kelvin" in payload):
         payload["__prefer_color_temp"] = True
