@@ -2696,7 +2696,39 @@ def main() -> None:
                 if last_mode_state.get(controller_id) != mode_payload:
                     last_mode_state[controller_id] = mode_payload
                     _publish_mode_state(client, controller_id, mode_value)
-                _publish_circadian_targets(controller_id, controller_cfg, master)
+                states = last_inputs.get(controller_id, {})
+                output_state, _ = _state_from_inputs(states) if isinstance(states, dict) else ("off", None)
+                smooth_brightness, smooth_ct, _, _, _, _ = _publish_circadian_targets(
+                    controller_id,
+                    controller_cfg,
+                    master,
+                    states=states,
+                    output_state_override=output_state,
+                )
+                if output_state == "on" and states:
+                    brightness = smooth_brightness if effective_brightness else None
+                    color_payload = (
+                        {"color_temp_kelvin": smooth_ct, "color_mode": "color_temp"}
+                        if effective_color and isinstance(smooth_ct, int)
+                        else None
+                    )
+                    if color_payload:
+                        _publish_light_command(
+                            client,
+                            controller_id,
+                            states,
+                            brightness,
+                            color_payload,
+                            only_on=True,
+                        )
+                    elif isinstance(brightness, int):
+                        _publish_input_command(
+                            client,
+                            controller_id,
+                            "set_brightness_inputs",
+                            _targets_on(states),
+                            brightness,
+                        )
             return
 
         if suffix == "limits" and len(parts) > 3 and parts[3] == "set":
