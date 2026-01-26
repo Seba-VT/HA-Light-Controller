@@ -2270,6 +2270,10 @@ def main() -> None:
             }
             limits = _normalize_limits(controller_cfg.get("limits"))
             weather_ct, weather_reduction_pct = _apply_weather_ct_with_reduction(raw_ct, limits, weather_payload)
+            if isinstance(weather_ct, (int, float)):
+                weather_ct = int(weather_ct)
+            if isinstance(weather_ct, int):
+                weather_ct = min(weather_ct, raw_ct)
             if weather_reduction_pct is not None:
                 weather_reduction_pct = float(weather_reduction_pct)
             debug_weather_min = limits.get("weather_min_kelvin")
