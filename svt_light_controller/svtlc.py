@@ -1363,6 +1363,12 @@ def _targets_on(states: dict) -> list[str]:
     return targets
 
 
+def _filter_states(states: dict, targets: list[str]) -> dict:
+    if not targets or not isinstance(states, dict):
+        return {}
+    return {entity_id: states[entity_id] for entity_id in targets if entity_id in states}
+
+
 def _targets_with_mode(states: dict, color_mode: str | None, only_on: bool) -> list[str]:
     if not color_mode:
         return _targets_on(states) if only_on else _targets_all(states)
@@ -3377,6 +3383,19 @@ def main() -> None:
                 ):
                     if key in desired:
                         desired_color[key] = desired[key]
+            elif mode_value == "Sleep":
+                _publish_input_command(client, controller_id, "turn_on_inputs", external_on)
+                _apply_sleep_targets(
+                    controller_id,
+                    controller_cfg,
+                    master,
+                    _filter_states(states, external_on),
+                    only_on=True,
+                )
+                return
+            elif mode_value == "WakeUp":
+                _publish_input_command(client, controller_id, "turn_on_inputs", external_on)
+                return
             else:
                 desired_brightness = smooth_brightness if smooth_brightness is not None else output_brightness
                 if smooth_ct is not None:
