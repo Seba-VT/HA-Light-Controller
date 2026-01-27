@@ -48,6 +48,7 @@ RETRY_TOLERANCES = {
 }
 LAST_COLOR_COMMAND: dict[str, dict[str, dict]] = {}
 LAST_ON_COMMAND: dict[str, dict[str, float]] = {}
+MANUAL_CT_DELTA_K = 20
 
 
 def _load_options() -> dict:
@@ -3177,6 +3178,9 @@ def main() -> None:
                 current_ct = _state_color_temp_kelvin(value)
                 mode_changed = prev_mode != current_mode
                 ct_changed = prev_ct != current_ct and (prev_ct is not None or current_ct is not None)
+                if ct_changed and prev_ct is not None and current_ct is not None:
+                    if abs(prev_ct - current_ct) < MANUAL_CT_DELTA_K:
+                        ct_changed = False
                 if not (mode_changed or ct_changed):
                     continue
                 on_stamp = LAST_ON_COMMAND.get(controller_id, {}).get(entity_id)
