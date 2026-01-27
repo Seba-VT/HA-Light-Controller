@@ -3154,6 +3154,7 @@ def main() -> None:
         newly_available = []
         external_on = []
         manual_color_change = False
+        manual_change_details = []
         if isinstance(states, dict):
             for entity_id, value in states.items():
                 if not isinstance(value, dict):
@@ -3189,6 +3190,16 @@ def main() -> None:
                     if age > 10.0:
                         LAST_COLOR_COMMAND.get(controller_id, {}).pop(entity_id, None)
                 manual_color_change = True
+                manual_change_details.append(
+                    {
+                        "entity": entity_id,
+                        "prev_mode": prev_mode,
+                        "current_mode": current_mode,
+                        "prev_ct": prev_ct,
+                        "current_ct": current_ct,
+                        "recent_cmd_age": float(recent.get("ts", 0.0)) if recent else None,
+                    }
+                )
         last_inputs[controller_id] = states
         if isinstance(states, dict) and states:
             total_inputs = len(states)
@@ -3239,6 +3250,11 @@ def main() -> None:
             )
             turned_on = output_state == "on" and prev_state != "on"
             if manual_color_change:
+                logger.info(
+                    "Manual color/CT change detected on inputs for %s: %s",
+                    controller_id,
+                    manual_change_details,
+                )
                 _set_circadian_flags(
                     client,
                     controller_id,
