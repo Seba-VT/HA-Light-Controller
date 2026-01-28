@@ -48,7 +48,8 @@ RETRY_TOLERANCES = {
 }
 LAST_COLOR_COMMAND: dict[str, dict[str, dict]] = {}
 LAST_ON_COMMAND: dict[str, dict[str, float]] = {}
-MANUAL_CT_DELTA_K = 20
+MANUAL_CT_DELTA_K = 75
+MANUAL_CMD_GRACE_SECONDS = 30.0
 
 
 def _load_options() -> dict:
@@ -3189,9 +3190,9 @@ def main() -> None:
                 recent = LAST_COLOR_COMMAND.get(controller_id, {}).get(entity_id)
                 if recent:
                     age = time.time() - float(recent.get("ts", 0.0))
-                    if age <= 5.0 and _color_payload_matches(value, recent.get("payload", {})):
+                    if age <= MANUAL_CMD_GRACE_SECONDS and _color_payload_matches(value, recent.get("payload", {})):
                         continue
-                    if age > 10.0:
+                    if age > (MANUAL_CMD_GRACE_SECONDS * 2):
                         LAST_COLOR_COMMAND.get(controller_id, {}).pop(entity_id, None)
                 manual_color_change = True
                 manual_change_details.append(
@@ -3201,7 +3202,7 @@ def main() -> None:
                         "current_mode": current_mode,
                         "prev_ct": prev_ct,
                         "current_ct": current_ct,
-                        "recent_cmd_age": float(recent.get("ts", 0.0)) if recent else None,
+                        "recent_cmd_age": age if recent else None,
                     }
                 )
         last_inputs[controller_id] = states
