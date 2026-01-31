@@ -3171,6 +3171,8 @@ def main() -> None:
                 current_state = str(value.get("state", "")).strip().lower()
                 if prev_state != "on" and current_state == "on":
                     external_on.append(entity_id)
+                if prev_state != "on":
+                    continue
                 if current_state != "on":
                     continue
                 prev_mode = prev_value.get("color_mode")
