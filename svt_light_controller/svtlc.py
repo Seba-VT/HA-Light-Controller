@@ -1096,18 +1096,22 @@ def _evaluate_curve(points: list[dict], t_minutes: float) -> float | None:
     local_t = (t - p1[0]) / span
     return _monotone_hermite(p0, p1, p2, p3, local_t, span)
 def _state_from_inputs(states: dict) -> tuple[str, int | None]:
+    any_on = False
     on_brightness = []
     for value in states.values():
         if not isinstance(value, dict):
             continue
         if str(value.get("state", "")).strip().lower() != "on":
             continue
+        any_on = True
         brightness = value.get("brightness")
         if isinstance(brightness, int):
             on_brightness.append(brightness)
 
-    if not on_brightness:
+    if not any_on:
         return "off", None
+    if not on_brightness:
+        return "on", None
 
     median_value = int(statistics.median(on_brightness))
     return "on", median_value
@@ -1523,48 +1527,21 @@ def _select_color_mode(modes: list[str], color_payload: dict) -> str | None:
 def _publish_output_state(
     client,
     controller_id: str,
-    state: str,
-    brightness: int | None,
-    modes,
-    min_mireds,
-    max_mireds,
-    color_payload: dict,
-    effect_list: list[str],
-    effect: str | None,
+    payload: dict,
 ) -> dict:
     output_topic = f"svtlc/{controller_id}/output"
-    payload = {"state": state}
-    if brightness is not None:
-        payload["brightness"] = brightness
-    if modes:
-        payload["supported_color_modes"] = modes
-    if isinstance(min_mireds, int):
-        payload["min_mireds"] = min_mireds
-    if isinstance(max_mireds, int):
-        payload["max_mireds"] = max_mireds
-    if effect_list:
-        payload["effect_list"] = effect_list
-    if effect is not None:
-        payload["effect"] = effect
-    color_payload.pop("__prefer_color_temp", None)
-    payload.update(color_payload)
-
-    if "rgb_color" in payload and isinstance(payload["rgb_color"], list) and len(payload["rgb_color"]) == 3:
-        r, g, b = payload["rgb_color"]
-        if "rgbw" in (modes or []) and "rgbw_color" not in payload:
-            payload["rgbw_color"] = [r, g, b, 0]
-        if "rgbww" in (modes or []) and "rgbww_color" not in payload:
-            payload["rgbww_color"] = [r, g, b, 0, 0]
-
-    color_mode = _select_color_mode(modes or [], payload)
-    if color_mode:
-        payload["color_mode"] = color_mode
-        if color_mode != "color_temp":
-            payload.pop("color_temp", None)
-            payload.pop("color_temp_kelvin", None)
-
-    client.publish(output_topic, json.dumps(payload), qos=0, retain=True)
-    return payload
+    cleaned = {}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key.startswith("__"):
+                continue
+            if value is None and key != "state":
+                continue
+            cleaned[key] = value
+    if "state" not in cleaned:
+        cleaned["state"] = "off"
+    client.publish(output_topic, json.dumps(cleaned), qos=0, retain=True)
+    return cleaned
 
 
 def _extract_color_payload(payload: dict) -> tuple[str | None, dict]:
@@ -1973,6 +1950,60 @@ def main() -> None:
                 targets,
                 brightness,
             )
+
+    def _build_sleep_output_payload(controller_cfg: dict, master_cfg: dict, states: dict) -> dict:
+        sleep_cfg = _normalize_sleep_config(master_cfg, controller_cfg)
+        limits = _normalize_limits(controller_cfg.get("limits") if isinstance(controller_cfg, dict) else None)
+        sleep_brightness = int(round(255.0 * (sleep_cfg["brightness_pct"] / 100.0)))
+        sleep_out_brightness = _scale_brightness(sleep_brightness, limits)
+        sleep_hs = sleep_cfg.get("hs_color")
+        sleep_rgb = None
+        if isinstance(sleep_hs, list) and len(sleep_hs) == 2:
+            h = float(sleep_hs[0]) % 360.0
+            s = max(0.0, min(100.0, float(sleep_hs[1]))) / 100.0
+            c = s
+            x = c * (1.0 - abs(((h / 60.0) % 2.0) - 1.0))
+            if h < 60.0:
+                rp, gp, bp = c, x, 0.0
+            elif h < 120.0:
+                rp, gp, bp = x, c, 0.0
+            elif h < 180.0:
+                rp, gp, bp = 0.0, c, x
+            elif h < 240.0:
+                rp, gp, bp = 0.0, x, c
+            elif h < 300.0:
+                rp, gp, bp = x, 0.0, c
+            else:
+                rp, gp, bp = c, 0.0, x
+            m = 1.0 - c
+            sleep_rgb = [
+                int(round((rp + m) * 255.0)),
+                int(round((gp + m) * 255.0)),
+                int(round((bp + m) * 255.0)),
+            ]
+        modes = _union_color_modes(states)
+        min_mireds, max_mireds = _union_mireds(states)
+        effect_list = _union_effect_list(states)
+        output_payload = {
+            "state": "on",
+            "brightness": sleep_out_brightness,
+            "supported_color_modes": modes,
+            "min_mireds": min_mireds,
+            "max_mireds": max_mireds,
+            "effect_list": effect_list,
+        }
+        if isinstance(sleep_hs, list) and len(sleep_hs) == 2:
+            output_payload["hs_color"] = [float(sleep_hs[0]), float(sleep_hs[1])]
+        if isinstance(sleep_rgb, list) and len(sleep_rgb) == 3:
+            output_payload["rgb_color"] = sleep_rgb
+            if "rgbww" in (modes or []):
+                output_payload["rgbww_color"] = [sleep_rgb[0], sleep_rgb[1], sleep_rgb[2], 0, 0]
+            if "rgbw" in (modes or []):
+                output_payload["rgbw_color"] = [sleep_rgb[0], sleep_rgb[1], sleep_rgb[2], 0]
+        color_mode = _select_color_mode(modes or [], output_payload)
+        if color_mode:
+            output_payload["color_mode"] = color_mode
+        return output_payload
 
     def _handle_sleep_mode(
         controller_id: str,
@@ -2991,6 +3022,12 @@ def main() -> None:
                     None,
                 )
                 mode_value = _normalize_mode(controller_cfg.get("mode") if isinstance(controller_cfg, dict) else None)
+                if mode_value == "Sleep":
+                    # In Sleep, always re-apply configured Sleep targets on ON events.
+                    # Ignore any carried brightness/color from the output event payload.
+                    brightness = None
+                    color_payload = {}
+                    color_mode = None
                 if mode_value not in ("Away", "WakeUp", "Sleep"):
                     _update_mode(controller_id, "Circadian")
                     prev_mode = last_mode_state.get(controller_id)
@@ -3058,7 +3095,12 @@ def main() -> None:
                         effect=effect,
                     )
                 if mode_value == "Sleep" and controller_cfg:
+                    _publish_input_command(client, controller_id, "turn_on_inputs", targets)
                     _apply_sleep_targets(controller_id, controller_cfg, master, states, only_on=False)
+                    # Publish an immediate Sleep output snapshot so the output entity
+                    # does not remain stale while waiting for the next inputs update.
+                    output_payload = _build_sleep_output_payload(controller_cfg, master, states)
+                    last_output[controller_id] = _publish_output_state(client, controller_id, output_payload)
                     last_sleep_state[controller_id] = {"mode": "Sleep", "pending": False, "last_output": "on"}
             elif event == "manual_brightness" and isinstance(brightness, int):
                 controllers, master = _load_controller_cache()
@@ -3179,12 +3221,28 @@ def main() -> None:
                 current_mode = value.get("color_mode")
                 prev_ct = _state_color_temp_kelvin(prev_value)
                 current_ct = _state_color_temp_kelvin(value)
+                prev_rgb = _extract_rgb(prev_value)
+                current_rgb = _extract_rgb(value)
                 mode_changed = prev_mode != current_mode
                 ct_changed = prev_ct != current_ct and (prev_ct is not None or current_ct is not None)
+                rgb_changed = False
+                if prev_rgb is not None or current_rgb is not None:
+                    if not (
+                        isinstance(prev_rgb, (list, tuple))
+                        and isinstance(current_rgb, (list, tuple))
+                        and len(prev_rgb) == 3
+                        and len(current_rgb) == 3
+                    ):
+                        rgb_changed = True
+                    else:
+                        rgb_changed = any(
+                            abs(int(current_rgb[idx]) - int(prev_rgb[idx])) > RETRY_TOLERANCES.get("rgb", 3)
+                            for idx in range(3)
+                        )
                 if ct_changed and prev_ct is not None and current_ct is not None:
                     if abs(prev_ct - current_ct) < MANUAL_CT_DELTA_K:
                         ct_changed = False
-                if not (mode_changed or ct_changed):
+                if not (mode_changed or ct_changed or rgb_changed):
                     continue
                 on_stamp = LAST_ON_COMMAND.get(controller_id, {}).get(entity_id)
                 if on_stamp and (time.time() - float(on_stamp)) <= 5.0:
@@ -3204,6 +3262,8 @@ def main() -> None:
                         "current_mode": current_mode,
                         "prev_ct": prev_ct,
                         "current_ct": current_ct,
+                        "prev_rgb": prev_rgb,
+                        "current_rgb": current_rgb,
                         "recent_cmd_age": age if recent else None,
                     }
                 )
@@ -3262,13 +3322,18 @@ def main() -> None:
                     controller_id,
                     manual_change_details,
                 )
-                _set_circadian_flags(
-                    client,
-                    controller_id,
-                    last_circadian_settings,
-                    color_temp_enabled=False,
-                    persist=True,
-                )
+                if mode_value == "Sleep":
+                    # Keep Sleep mode active. Manual tweaks can apply while on,
+                    # but Sleep targets will be re-applied on next off->on cycle.
+                    pass
+                else:
+                    _set_circadian_flags(
+                        client,
+                        controller_id,
+                        last_circadian_settings,
+                        color_temp_enabled=False,
+                        persist=True,
+                    )
             if turned_on:
                 if mode_value == "Away":
                     _set_circadian_flags(
@@ -3326,6 +3391,41 @@ def main() -> None:
         color_payload = _median_color_from_inputs(states)
         effect_list = _union_effect_list(states)
         effect = _most_common_effect(states)
+        if controller_cfg and mode_value == "Sleep" and output_state == "on":
+            sleep_cfg = _normalize_sleep_config(master, controller_cfg)
+            limits = _normalize_limits(controller_cfg.get("limits") if isinstance(controller_cfg, dict) else None)
+            sleep_brightness = int(round(255.0 * (sleep_cfg["brightness_pct"] / 100.0)))
+            if output_brightness is None:
+                output_brightness = _scale_brightness(sleep_brightness, limits)
+            sleep_hs = sleep_cfg.get("hs_color")
+            if isinstance(sleep_hs, list) and len(sleep_hs) == 2:
+                h = float(sleep_hs[0]) % 360.0
+                s = max(0.0, min(100.0, float(sleep_hs[1]))) / 100.0
+                c = s
+                x = c * (1.0 - abs(((h / 60.0) % 2.0) - 1.0))
+                if h < 60.0:
+                    rp, gp, bp = c, x, 0.0
+                elif h < 120.0:
+                    rp, gp, bp = x, c, 0.0
+                elif h < 180.0:
+                    rp, gp, bp = 0.0, c, x
+                elif h < 240.0:
+                    rp, gp, bp = 0.0, x, c
+                elif h < 300.0:
+                    rp, gp, bp = x, 0.0, c
+                else:
+                    rp, gp, bp = c, 0.0, x
+                m = 1.0 - c
+                sleep_rgb = [
+                    int(round((rp + m) * 255.0)),
+                    int(round((gp + m) * 255.0)),
+                    int(round((bp + m) * 255.0)),
+                ]
+                color_payload = {
+                    "hs_color": [float(sleep_hs[0]), float(sleep_hs[1])],
+                    "rgb_color": sleep_rgb,
+                    "color_mode": "hs",
+                }
 
         output_payload = {
             "state": output_state,
@@ -3391,6 +3491,7 @@ def main() -> None:
             desired_brightness = None
             desired_effect = None
             desired_color = {}
+            external_handled = False
             if mode_value == "Manual" and desired:
                 desired_brightness = desired.get("brightness")
                 desired_effect = desired.get("effect")
@@ -3415,40 +3516,49 @@ def main() -> None:
                     _filter_states(states, external_on),
                     only_on=True,
                 )
-                return
+                if controller_cfg:
+                    output_payload = _build_sleep_output_payload(controller_cfg, master, states)
+                    last_output[controller_id] = _publish_output_state(client, controller_id, output_payload)
+                external_handled = True
             elif mode_value == "WakeUp":
                 _publish_input_command(client, controller_id, "turn_on_inputs", external_on)
-                return
+                external_handled = True
             else:
                 desired_brightness = smooth_brightness if smooth_brightness is not None else output_brightness
                 if smooth_ct is not None:
                     desired_color = {"color_temp_kelvin": smooth_ct, "color_mode": "color_temp"}
-            _publish_input_command(client, controller_id, "turn_on_inputs", external_on)
-            if isinstance(desired_effect, str) and desired_effect:
+            if not external_handled:
                 _publish_input_command(
                     client,
                     controller_id,
-                    "set_effect_inputs",
+                    "turn_on_inputs",
                     external_on,
-                    effect=desired_effect,
                 )
-            if desired_color:
-                _publish_input_command(
-                    client,
-                    controller_id,
-                    "set_color_inputs",
-                    external_on,
-                    desired_brightness,
-                    color_payload=desired_color,
-                )
-            elif desired_brightness is not None:
-                _publish_input_command(
-                    client,
-                    controller_id,
-                    "set_brightness_inputs",
-                    external_on,
-                    desired_brightness,
-                )
+                if isinstance(desired_effect, str) and desired_effect:
+                    _publish_input_command(
+                        client,
+                        controller_id,
+                        "set_effect_inputs",
+                        external_on,
+                        effect=desired_effect,
+                    )
+                if desired_color:
+                    _publish_input_command(
+                        client,
+                        controller_id,
+                        "set_color_inputs",
+                        external_on,
+                        desired_brightness,
+                        color_payload=desired_color,
+                    )
+                elif desired_brightness is not None:
+                    _publish_input_command(
+                        client,
+                        controller_id,
+                        "set_brightness_inputs",
+                        external_on,
+                        desired_brightness,
+                    )
 
         if "rgb_color" in output_payload and isinstance(output_payload["rgb_color"], list) and len(output_payload["rgb_color"]) == 3:
             r, g, b = output_payload["rgb_color"]
@@ -3464,23 +3574,18 @@ def main() -> None:
                 output_payload.pop("color_temp", None)
                 output_payload.pop("color_temp_kelvin", None)
 
-        if _payload_equals(last_output.get(controller_id), output_payload):
+        force_output_publish = bool(mode_value == "Sleep" and output_state == "on")
+        if (not force_output_publish) and _payload_equals(last_output.get(controller_id), output_payload):
             return
 
         last_output[controller_id] = output_payload
-        _publish_output_state(
-            client,
+        published = _publish_output_state(client, controller_id, output_payload)
+        logger.debug(
+            "Published %s/%s to %s",
+            published.get("state"),
+            published.get("brightness"),
             controller_id,
-            output_state,
-            output_brightness,
-            modes,
-            min_mireds,
-            max_mireds,
-            color_payload,
-            effect_list,
-            effect,
         )
-        logger.debug("Published %s/%s to %s", output_state, output_brightness, controller_id)
 
     client = mqtt.Client()
     client.on_connect = on_connect

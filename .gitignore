@@ -1,0 +1,10 @@
+# Local troubleshooting scratch files
+_*.sh
+tmp_*.json
+cpu_*.json
+culprit_*.json
+disable_*.json
+flows_*_test.json
+flows_after_disable_all_restore_check.json
+automation.yaml
+automations.yaml
