@@ -2882,6 +2882,35 @@ def main() -> None:
                 _publish_mode_state(client, controller_id, mode_value)
             if controller_cfg:
                 states = last_inputs.get(controller_id, {})
+                if prev_mode_value == "Away" and mode_value != "Away":
+                    targets = _targets_all(states)
+                    if not targets and isinstance(controller_cfg, dict):
+                        configured = controller_cfg.get("input_lights")
+                        if isinstance(configured, list):
+                            targets = [str(entity_id) for entity_id in configured if isinstance(entity_id, str) and entity_id]
+                    if targets:
+                        _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+                    away_state.pop(controller_id, None)
+                    away_payload = {
+                        "active": False,
+                        "on": False,
+                        "next_ts": None,
+                        "next_iso": None,
+                        "window_start": None,
+                        "window_end": None,
+                    }
+                    if last_away_state.get(controller_id) != away_payload:
+                        last_away_state[controller_id] = away_payload
+                        _publish_away_state(client, controller_id, away_payload)
+                    _publish_circadian_targets(
+                        controller_id,
+                        controller_cfg,
+                        master,
+                        states=states,
+                        output_state_override="off",
+                        force_reset=True,
+                    )
+                    return
                 (
                     _raw_brightness,
                     _raw_ct,
