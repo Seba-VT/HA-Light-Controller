@@ -2714,6 +2714,7 @@ def main() -> None:
             if mode_value == "Away":
                 _handle_away_mode(
                     controller_id,
+                    controller,
                     states,
                     master,
                     smooth_brightness,
