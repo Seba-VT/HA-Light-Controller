@@ -467,6 +467,21 @@
             </div>
             <div class="weather-panel">
               <div class="curve-header">
+                <span>Transitions</span>
+              </div>
+              <div class="weather-grid">
+                <label class="toggle-row curve-toggle" title="Apply transition time to brightness and color commands.">
+                  <input type="checkbox" id="transition-enabled" />
+                  Enable transition
+                </label>
+                <label title="Transition time in seconds for color/brightness commands.">
+                  Transition (seconds)
+                  <input type="number" id="transition-seconds" min="0.1" max="30" step="0.1" value="0.5" />
+                </label>
+              </div>
+            </div>
+            <div class="weather-panel">
+              <div class="curve-header">
                 <span>Pre-Off Staging</span>
               </div>
               <div class="weather-grid">
@@ -512,7 +527,7 @@
   </div>
 
   <script src="vendor/tabulator/tabulator.min.js"></script>
-  <script src="app.js?v=20260302-17"></script>
+  <script src="app.js?v=20260302-18"></script>
 </body>
 </html>
 

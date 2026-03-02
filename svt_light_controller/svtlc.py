@@ -592,6 +592,7 @@ def _queue_retry_entry(
     brightness: int | None,
     color_payload: dict | None,
     effect: str | None,
+    transition: float | None,
 ) -> None:
     if not RETRY_CONFIG.get("enabled"):
         return
@@ -607,6 +608,7 @@ def _queue_retry_entry(
         "brightness": brightness,
         "color_payload": color_payload or {},
         "effect": effect,
+        "transition": transition,
         "attempts": 0,
         "next_ts": time.time() + float(RETRY_CONFIG.get("delay_seconds", 2)),
         "created_ts": time.time(),
@@ -855,6 +857,31 @@ def _normalize_pre_off_config(controller: dict | None) -> dict:
         "color_temp_kelvin": max(1500, min(8000, _to_int(pre_off.get("color_temp_kelvin"), 2200))),
         "hs_color": [hue, sat],
     }
+
+
+def _normalize_transition_config(controller: dict | None) -> dict:
+    transition = controller.get("transition") if isinstance(controller, dict) else {}
+    if not isinstance(transition, dict):
+        transition = {}
+
+    def _to_float(value, fallback: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    seconds = max(0.1, min(30.0, _to_float(transition.get("seconds"), 0.5)))
+    return {
+        "enabled": transition.get("enabled") is True,
+        "seconds": seconds,
+    }
+
+
+def _controller_transition_seconds(controller: dict | None) -> float | None:
+    cfg = _normalize_transition_config(controller)
+    if not cfg.get("enabled"):
+        return None
+    return float(cfg.get("seconds", 0.5))
 
 def _normalize_smoothing_config(master: dict) -> dict:
     smoothing = master.get("smoothing") if isinstance(master, dict) else {}
@@ -1479,6 +1506,7 @@ def _publish_input_command(
     brightness: int | None = None,
     color_payload: dict | None = None,
     effect: str | None = None,
+    transition: float | None = None,
     track: bool = True,
 ) -> None:
     if not targets:
@@ -1492,13 +1520,15 @@ def _publish_input_command(
         payload.update(color_payload)
     if effect is not None:
         payload["effect"] = effect
+    if isinstance(transition, (int, float)):
+        payload["transition"] = float(transition)
     client.publish(output_topic, json.dumps(payload), qos=0, retain=False)
     if track:
         # Cancel any pending retries for this controller when a new command is issued.
         for key, entry in list(RETRY_PENDING.items()):
             if entry.get("controller_id") == controller_id:
                 RETRY_PENDING.pop(key, None)
-        _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect)
+        _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect, transition)
         if command == "turn_on_inputs" and targets:
             entry = LAST_ON_COMMAND.setdefault(controller_id, {})
             now_ts = time.time()
@@ -1520,6 +1550,7 @@ def _publish_light_command(
     brightness: int | None,
     color_payload: dict | None,
     only_on: bool,
+    transition: float | None = None,
 ) -> None:
     if color_payload:
         color_mode = None
@@ -1535,12 +1566,20 @@ def _publish_light_command(
             color_targets,
             brightness,
             color_payload=color_payload,
+            transition=transition,
         )
         return
 
     targets = _targets_on(states) if only_on else _targets_all(states)
     if targets and brightness is not None:
-        _publish_input_command(client, controller_id, "set_brightness_inputs", targets, brightness)
+        _publish_input_command(
+            client,
+            controller_id,
+            "set_brightness_inputs",
+            targets,
+            brightness,
+            transition=transition,
+        )
 
 
 def _publish_turn_off_with_pre_stage(
@@ -1554,6 +1593,7 @@ def _publish_turn_off_with_pre_stage(
         return
 
     pre_off = _normalize_pre_off_config(controller_cfg)
+    transition = _controller_transition_seconds(controller_cfg)
     if pre_off.get("enabled"):
         stage_targets = list(targets)
         if isinstance(states, dict) and states:
@@ -1574,8 +1614,12 @@ def _publish_turn_off_with_pre_stage(
                 stage_targets,
                 brightness=int(round(255.0 * (float(pre_off["brightness_pct"]) / 100.0))),
                 color_payload=color_payload,
+                transition=transition,
             )
-            time.sleep(PRE_OFF_STAGE_DELAY_SECONDS)
+            delay = PRE_OFF_STAGE_DELAY_SECONDS
+            if isinstance(transition, (int, float)):
+                delay = max(delay, float(transition) + 0.1)
+            time.sleep(delay)
 
     _publish_input_command(client, controller_id, "turn_off_inputs", targets)
 
@@ -1821,6 +1865,7 @@ def main() -> None:
                 entry.get("brightness"),
                 color_payload=entry.get("color_payload"),
                 effect=entry.get("effect"),
+                transition=entry.get("transition"),
                 track=False,
             )
 
@@ -1877,6 +1922,7 @@ def main() -> None:
         refresh_seconds: int,
     ) -> None:
         cfg = _normalize_away_config(master_cfg)
+        transition = _controller_transition_seconds(controller_cfg)
         now = datetime.now().astimezone()
         now_minutes = now.hour * 60 + now.minute + (now.second / 60.0)
         now_ts = time.time()
@@ -1950,6 +1996,7 @@ def main() -> None:
                         brightness,
                         color_payload,
                         only_on=False,
+                        transition=transition,
                     )
                     last_circadian[controller_id] = {"brightness": brightness, "color_temp": smooth_ct}
                     away_refresh[controller_id] = now_ts
@@ -1987,6 +2034,7 @@ def main() -> None:
         only_on: bool = True,
     ) -> None:
         sleep_cfg = _normalize_sleep_config(master_cfg, controller_cfg)
+        transition = _controller_transition_seconds(controller_cfg)
         limits = _normalize_limits(controller_cfg.get("limits") if isinstance(controller_cfg, dict) else None)
         brightness = int(round(255.0 * (sleep_cfg["brightness_pct"] / 100.0)))
         brightness = _scale_brightness(brightness, limits)
@@ -2010,6 +2058,7 @@ def main() -> None:
                 color_targets,
                 brightness,
                 color_payload={"hs_color": hs_color, "color_mode": "hs"},
+                transition=transition,
             )
 
         if ct_targets and color_temp is not None:
@@ -2020,6 +2069,7 @@ def main() -> None:
                 ct_targets,
                 brightness,
                 color_payload={"color_temp_kelvin": color_temp, "color_mode": "color_temp"},
+                transition=transition,
             )
             return
 
@@ -2030,6 +2080,7 @@ def main() -> None:
                 "set_brightness_inputs",
                 targets,
                 brightness,
+                transition=transition,
             )
 
     def _build_sleep_output_payload(controller_cfg: dict, master_cfg: dict, states: dict) -> dict:
@@ -2118,6 +2169,7 @@ def main() -> None:
         target_ct: int | None,
     ) -> None:
         wakeup_cfg = _normalize_wakeup_config(master_cfg, controller_cfg)
+        transition = _controller_transition_seconds(controller_cfg)
         limits = _normalize_limits(controller_cfg.get("limits") if isinstance(controller_cfg, dict) else None)
         start_brightness = int(round(255.0 * (wakeup_cfg["start_brightness_pct"] / 100.0)))
         start_brightness = _scale_brightness(start_brightness, limits)
@@ -2186,6 +2238,7 @@ def main() -> None:
                         start_brightness,
                         color_payload,
                         only_on=False,
+                        transition=transition,
                     )
                 else:
                     _publish_input_command(client, controller_id, "turn_on_inputs", targets)
@@ -2205,6 +2258,7 @@ def main() -> None:
                     start_brightness,
                     color_payload,
                     only_on=True,
+                    transition=transition,
                 )
             current["applied_start"] = True
 
@@ -2227,6 +2281,7 @@ def main() -> None:
                 step_brightness,
                 color_payload,
                 only_on=True,
+                transition=transition,
             )
 
         if progress >= 1.0:
@@ -2729,6 +2784,7 @@ def main() -> None:
                     brightness,
                     color_payload,
                     only_on=True,
+                    transition=_controller_transition_seconds(controller_cfg),
                 )
 
             last_circadian[controller_id] = {"brightness": brightness, "color_temp": color_temp}
@@ -2844,6 +2900,7 @@ def main() -> None:
                             brightness,
                             color_payload,
                             only_on=True,
+                            transition=_controller_transition_seconds(controller_cfg),
                         )
                     elif isinstance(brightness, int):
                         _publish_input_command(
@@ -2852,6 +2909,7 @@ def main() -> None:
                             "set_brightness_inputs",
                             _targets_on(states),
                             brightness,
+                            transition=_controller_transition_seconds(controller_cfg),
                         )
             return
 
@@ -3051,6 +3109,7 @@ def main() -> None:
                         smooth_brightness if isinstance(smooth_brightness, int) and bool(brightness_enabled) else None,
                         color_payload,
                         only_on=True,
+                        transition=_controller_transition_seconds(controller_cfg),
                     )
                 if mode_value == "Sleep":
                     _handle_sleep_mode(
@@ -3193,6 +3252,7 @@ def main() -> None:
                                 smooth_brightness if isinstance(smooth_brightness, int) else None,
                                 color_payload,
                                 only_on=False,
+                                transition=_controller_transition_seconds(controller_cfg),
                             )
                 elif isinstance(brightness, int) or color_payload:
                     _publish_light_command(
@@ -3202,6 +3262,7 @@ def main() -> None:
                         brightness if isinstance(brightness, int) else None,
                         color_payload,
                         only_on=False,
+                        transition=_controller_transition_seconds(controller_cfg),
                     )
                 if isinstance(effect, str) and effect:
                     _publish_input_command(
@@ -3254,6 +3315,7 @@ def main() -> None:
                     "set_brightness_inputs",
                     _targets_on(states),
                     brightness,
+                    transition=_controller_transition_seconds(controller_cfg),
                 )
                 if controller_cfg:
                     _publish_circadian_targets(controller_id, controller_cfg, master, states=states)
@@ -3293,6 +3355,7 @@ def main() -> None:
                     "set_color_inputs",
                     color_targets,
                     color_payload=color_payload,
+                    transition=_controller_transition_seconds(controller_cfg),
                 )
                 if controller_cfg:
                     _publish_circadian_targets(controller_id, controller_cfg, master, states=states)
@@ -3424,6 +3487,7 @@ def main() -> None:
         if not controller_cfg:
             logger.warning("Ignoring inputs for unknown controller %s (stale retained MQTT data?)", controller_id)
             return
+        transition_seconds = _controller_transition_seconds(controller_cfg)
         smooth_brightness = None
         smooth_ct = None
         if controller_cfg:
@@ -3594,6 +3658,7 @@ def main() -> None:
                         newly_available,
                         desired_brightness,
                         color_payload=desired_color,
+                        transition=transition_seconds,
                     )
                 elif desired_brightness is not None:
                     _publish_input_command(
@@ -3602,6 +3667,7 @@ def main() -> None:
                         "set_brightness_inputs",
                         newly_available,
                         desired_brightness,
+                        transition=transition_seconds,
                     )
         if external_on:
             desired_state = "on"
@@ -3667,6 +3733,7 @@ def main() -> None:
                         external_on,
                         desired_brightness,
                         color_payload=desired_color,
+                        transition=transition_seconds,
                     )
                 elif desired_brightness is not None:
                     _publish_input_command(
@@ -3675,6 +3742,7 @@ def main() -> None:
                         "set_brightness_inputs",
                         external_on,
                         desired_brightness,
+                        transition=transition_seconds,
                     )
 
         if "rgb_color" in output_payload and isinstance(output_payload["rgb_color"], list) and len(output_payload["rgb_color"]) == 3:

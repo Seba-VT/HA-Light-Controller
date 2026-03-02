@@ -76,6 +76,8 @@ const sleepSatOverrideInput = document.getElementById("sleep-sat-override");
 const wakeupUseMasterToggle = document.getElementById("wakeup-use-master");
 const wakeupDurationOverrideInput = document.getElementById("wakeup-duration-override");
 const wakeupStartBrightnessOverrideInput = document.getElementById("wakeup-start-brightness-override");
+const transitionEnabledToggle = document.getElementById("transition-enabled");
+const transitionSecondsInput = document.getElementById("transition-seconds");
 const preOffEnabledToggle = document.getElementById("pre-off-enabled");
 const preOffBrightnessInput = document.getElementById("pre-off-brightness");
 const preOffColorModeInput = document.getElementById("pre-off-color-mode");
@@ -1035,6 +1037,13 @@ function openEditor(index) {
       1
     );
   }
+  const transitionCfg = controller && typeof controller.transition === "object" ? controller.transition : {};
+  if (transitionEnabledToggle) {
+    transitionEnabledToggle.checked = transitionCfg.enabled === true;
+  }
+  if (transitionSecondsInput) {
+    transitionSecondsInput.value = coalesce(transitionCfg.seconds, 0.5);
+  }
   const preOffCfg = controller && typeof controller.pre_off === "object" ? controller.pre_off : {};
   if (preOffEnabledToggle) {
     preOffEnabledToggle.checked = preOffCfg.enabled === true;
@@ -1057,6 +1066,7 @@ function openEditor(index) {
   toggleCircadianFields();
   updateSleepOverrides();
   updateWakeupOverrides();
+  updateTransitionFields();
   updatePreOffFields();
   const masterBrightnessCurvePoints = state.master && Array.isArray(state.master.brightness_curve)
     ? state.master.brightness_curve
@@ -1142,6 +1152,13 @@ function closeEditor() {
   if (wakeupStartBrightnessOverrideInput) {
     wakeupStartBrightnessOverrideInput.value = "";
   }
+  if (transitionEnabledToggle) {
+    transitionEnabledToggle.checked = false;
+  }
+  if (transitionSecondsInput) {
+    transitionSecondsInput.value = "0.5";
+  }
+  updateTransitionFields();
   if (preOffEnabledToggle) {
     preOffEnabledToggle.checked = false;
   }
@@ -1622,6 +1639,16 @@ function updateWakeupOverrides() {
     if (wakeupStartBrightnessOverrideInput) {
       wakeupStartBrightnessOverrideInput.value = coalesce(getPath(state.master, ["wakeup", "start_brightness_pct"]), 1);
     }
+  }
+}
+
+function updateTransitionFields() {
+  if (!transitionEnabledToggle) {
+    return;
+  }
+  const enabled = transitionEnabledToggle.checked;
+  if (transitionSecondsInput) {
+    transitionSecondsInput.disabled = !enabled;
   }
 }
 
@@ -2343,6 +2370,9 @@ if (sleepUseMasterToggle) {
 if (wakeupUseMasterToggle) {
   wakeupUseMasterToggle.addEventListener("change", updateWakeupOverrides);
 }
+if (transitionEnabledToggle) {
+  transitionEnabledToggle.addEventListener("change", updateTransitionFields);
+}
 if (preOffEnabledToggle) {
   preOffEnabledToggle.addEventListener("change", updatePreOffFields);
 }
@@ -2535,6 +2565,14 @@ form.addEventListener("submit", async (event) => {
       100
     );
   }
+  const transitionPayload = {
+    enabled: transitionEnabledToggle ? transitionEnabledToggle.checked : false,
+    seconds: clampValue(
+      parseFloatOr(transitionSecondsInput ? transitionSecondsInput.value : undefined, 0.5),
+      0.1,
+      30
+    ),
+  };
   const preOffPayload = {
     enabled: preOffEnabledToggle ? preOffEnabledToggle.checked : false,
     brightness_pct: clampValue(
@@ -2564,6 +2602,7 @@ form.addEventListener("submit", async (event) => {
     limits: readLimitInputs(),
     sleep: sleepPayload,
     wakeup: wakeupPayload,
+    transition: transitionPayload,
     pre_off: preOffPayload,
     circadian: {
       enabled: circadianToggle ? circadianToggle.checked : false,
