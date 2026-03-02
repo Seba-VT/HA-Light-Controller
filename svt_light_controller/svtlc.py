@@ -1595,7 +1595,6 @@ def _publish_turn_off_with_pre_stage(
 
     pre_off = _normalize_pre_off_config(controller_cfg)
     transition = _controller_transition_seconds(controller_cfg)
-    used_pre_stage = False
     if pre_off.get("enabled"):
         stage_targets = list(targets)
         if isinstance(states, dict) and states:
@@ -1603,7 +1602,6 @@ def _publish_turn_off_with_pre_stage(
             if on_targets:
                 stage_targets = [entity_id for entity_id in targets if entity_id in on_targets]
         if stage_targets:
-            used_pre_stage = True
             color_mode = pre_off.get("color_mode")
             color_payload = (
                 {"color_temp_kelvin": int(pre_off["color_temp_kelvin"]), "color_mode": "color_temp"}
@@ -1617,20 +1615,16 @@ def _publish_turn_off_with_pre_stage(
                 stage_targets,
                 brightness=int(round(255.0 * (float(pre_off["brightness_pct"]) / 100.0))),
                 color_payload=color_payload,
-                transition=transition,
+                transition=None,
             )
-            delay = PRE_OFF_STAGE_DELAY_SECONDS
-            if isinstance(transition, (int, float)):
-                delay = max(delay, float(transition) + 0.1)
-            time.sleep(delay)
+            time.sleep(PRE_OFF_STAGE_DELAY_SECONDS)
 
-    off_transition = None if used_pre_stage else transition
     _publish_input_command(
         client,
         controller_id,
         "turn_off_inputs",
         targets,
-        transition=off_transition,
+        transition=transition,
     )
 
 
