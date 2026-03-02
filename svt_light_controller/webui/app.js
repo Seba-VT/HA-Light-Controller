@@ -76,6 +76,12 @@ const sleepSatOverrideInput = document.getElementById("sleep-sat-override");
 const wakeupUseMasterToggle = document.getElementById("wakeup-use-master");
 const wakeupDurationOverrideInput = document.getElementById("wakeup-duration-override");
 const wakeupStartBrightnessOverrideInput = document.getElementById("wakeup-start-brightness-override");
+const preOffEnabledToggle = document.getElementById("pre-off-enabled");
+const preOffBrightnessInput = document.getElementById("pre-off-brightness");
+const preOffColorModeInput = document.getElementById("pre-off-color-mode");
+const preOffCtInput = document.getElementById("pre-off-ct");
+const preOffHueInput = document.getElementById("pre-off-hue");
+const preOffSatInput = document.getElementById("pre-off-sat");
 const solarBrightnessToggle = document.getElementById("solar-brightness");
 const solarColorToggle = document.getElementById("solar-color-temp");
 const brightnessMinInput = document.getElementById("brightness-min");
@@ -1029,9 +1035,29 @@ function openEditor(index) {
       1
     );
   }
+  const preOffCfg = controller && typeof controller.pre_off === "object" ? controller.pre_off : {};
+  if (preOffEnabledToggle) {
+    preOffEnabledToggle.checked = preOffCfg.enabled === true;
+  }
+  if (preOffBrightnessInput) {
+    preOffBrightnessInput.value = coalesce(preOffCfg.brightness_pct, 1);
+  }
+  if (preOffColorModeInput) {
+    preOffColorModeInput.value = preOffCfg.color_mode === "color_temp" ? "color_temp" : "hs";
+  }
+  if (preOffCtInput) {
+    preOffCtInput.value = coalesce(preOffCfg.color_temp_kelvin, 2200);
+  }
+  if (preOffHueInput) {
+    preOffHueInput.value = coalesce(getPath(preOffCfg, ["hs_color", 0]), 0);
+  }
+  if (preOffSatInput) {
+    preOffSatInput.value = coalesce(getPath(preOffCfg, ["hs_color", 1]), 100);
+  }
   toggleCircadianFields();
   updateSleepOverrides();
   updateWakeupOverrides();
+  updatePreOffFields();
   const masterBrightnessCurvePoints = state.master && Array.isArray(state.master.brightness_curve)
     ? state.master.brightness_curve
     : curveDefaults.brightness;
@@ -1116,6 +1142,25 @@ function closeEditor() {
   if (wakeupStartBrightnessOverrideInput) {
     wakeupStartBrightnessOverrideInput.value = "";
   }
+  if (preOffEnabledToggle) {
+    preOffEnabledToggle.checked = false;
+  }
+  if (preOffBrightnessInput) {
+    preOffBrightnessInput.value = "1";
+  }
+  if (preOffColorModeInput) {
+    preOffColorModeInput.value = "hs";
+  }
+  if (preOffCtInput) {
+    preOffCtInput.value = "2200";
+  }
+  if (preOffHueInput) {
+    preOffHueInput.value = "0";
+  }
+  if (preOffSatInput) {
+    preOffSatInput.value = "100";
+  }
+  updatePreOffFields();
   toggleCircadianFields();
   applyLimitInputs(limitDefaults);
   if (brightnessCurve) {
@@ -1577,6 +1622,29 @@ function updateWakeupOverrides() {
     if (wakeupStartBrightnessOverrideInput) {
       wakeupStartBrightnessOverrideInput.value = coalesce(getPath(state.master, ["wakeup", "start_brightness_pct"]), 1);
     }
+  }
+}
+
+function updatePreOffFields() {
+  if (!preOffEnabledToggle) {
+    return;
+  }
+  const enabled = preOffEnabledToggle.checked;
+  const mode = preOffColorModeInput ? preOffColorModeInput.value : "hs";
+  if (preOffBrightnessInput) {
+    preOffBrightnessInput.disabled = !enabled;
+  }
+  if (preOffColorModeInput) {
+    preOffColorModeInput.disabled = !enabled;
+  }
+  if (preOffCtInput) {
+    preOffCtInput.disabled = !enabled || mode !== "color_temp";
+  }
+  if (preOffHueInput) {
+    preOffHueInput.disabled = !enabled || mode !== "hs";
+  }
+  if (preOffSatInput) {
+    preOffSatInput.disabled = !enabled || mode !== "hs";
   }
 }
 
@@ -2275,6 +2343,12 @@ if (sleepUseMasterToggle) {
 if (wakeupUseMasterToggle) {
   wakeupUseMasterToggle.addEventListener("change", updateWakeupOverrides);
 }
+if (preOffEnabledToggle) {
+  preOffEnabledToggle.addEventListener("change", updatePreOffFields);
+}
+if (preOffColorModeInput) {
+  preOffColorModeInput.addEventListener("change", updatePreOffFields);
+}
 if (solarBrightnessToggle) {
   solarBrightnessToggle.addEventListener("change", updateCurveOverlays);
 }
@@ -2461,6 +2535,24 @@ form.addEventListener("submit", async (event) => {
       100
     );
   }
+  const preOffPayload = {
+    enabled: preOffEnabledToggle ? preOffEnabledToggle.checked : false,
+    brightness_pct: clampValue(
+      parseIntOr(preOffBrightnessInput ? preOffBrightnessInput.value : undefined, 1),
+      1,
+      100
+    ),
+    color_mode: preOffColorModeInput && preOffColorModeInput.value === "color_temp" ? "color_temp" : "hs",
+    color_temp_kelvin: clampValue(
+      parseIntOr(preOffCtInput ? preOffCtInput.value : undefined, 2200),
+      1500,
+      8000
+    ),
+    hs_color: [
+      clampValue(parseFloatOr(preOffHueInput ? preOffHueInput.value : undefined, 0), 0, 360),
+      clampValue(parseFloatOr(preOffSatInput ? preOffSatInput.value : undefined, 100), 0, 100),
+    ],
+  };
   if (!uniqueId && uniqueInput) {
     uniqueInput.value = normalizedId;
   }
@@ -2472,6 +2564,7 @@ form.addEventListener("submit", async (event) => {
     limits: readLimitInputs(),
     sleep: sleepPayload,
     wakeup: wakeupPayload,
+    pre_off: preOffPayload,
     circadian: {
       enabled: circadianToggle ? circadianToggle.checked : false,
       use_master_brightness: useMasterBrightness,

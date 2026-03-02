@@ -50,6 +50,7 @@ LAST_COLOR_COMMAND: dict[str, dict[str, dict]] = {}
 LAST_ON_COMMAND: dict[str, dict[str, float]] = {}
 MANUAL_CT_DELTA_K = 75
 MANUAL_CMD_GRACE_SECONDS = 30.0
+PRE_OFF_STAGE_DELAY_SECONDS = 0.3
 
 
 def _load_options() -> dict:
@@ -813,6 +814,48 @@ def _normalize_wakeup_config(master: dict, controller: dict | None) -> dict:
         "start_brightness_pct": start_brightness_pct,
     }
 
+
+def _normalize_pre_off_config(controller: dict | None) -> dict:
+    pre_off = controller.get("pre_off") if isinstance(controller, dict) else {}
+    if not isinstance(pre_off, dict):
+        pre_off = {}
+
+    def _to_int(value, fallback: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    def _to_float(value, fallback: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    color_mode = str(pre_off.get("color_mode") or "hs").strip().lower()
+    if color_mode in {"ct", "color_temp_kelvin"}:
+        color_mode = "color_temp"
+    if color_mode not in {"hs", "color_temp"}:
+        color_mode = "hs"
+
+    hs_value = pre_off.get("hs_color")
+    if isinstance(hs_value, list) and len(hs_value) >= 2:
+        hue = _to_float(hs_value[0], 0.0)
+        sat = _to_float(hs_value[1], 100.0)
+    else:
+        hue = _to_float(pre_off.get("hue"), 0.0)
+        sat = _to_float(pre_off.get("saturation"), 100.0)
+    hue = max(0.0, min(360.0, hue))
+    sat = max(0.0, min(100.0, sat))
+
+    return {
+        "enabled": pre_off.get("enabled") is True,
+        "brightness_pct": max(1, min(100, _to_int(pre_off.get("brightness_pct"), 1))),
+        "color_mode": color_mode,
+        "color_temp_kelvin": max(1500, min(8000, _to_int(pre_off.get("color_temp_kelvin"), 2200))),
+        "hs_color": [hue, sat],
+    }
+
 def _normalize_smoothing_config(master: dict) -> dict:
     smoothing = master.get("smoothing") if isinstance(master, dict) else {}
     if not isinstance(smoothing, dict):
@@ -1500,6 +1543,43 @@ def _publish_light_command(
         _publish_input_command(client, controller_id, "set_brightness_inputs", targets, brightness)
 
 
+def _publish_turn_off_with_pre_stage(
+    client,
+    controller_id: str,
+    controller_cfg: dict | None,
+    states: dict,
+    targets: list[str],
+) -> None:
+    if not targets:
+        return
+
+    pre_off = _normalize_pre_off_config(controller_cfg)
+    if pre_off.get("enabled"):
+        stage_targets = list(targets)
+        if isinstance(states, dict) and states:
+            on_targets = set(_targets_on(states))
+            if on_targets:
+                stage_targets = [entity_id for entity_id in targets if entity_id in on_targets]
+        if stage_targets:
+            color_mode = pre_off.get("color_mode")
+            color_payload = (
+                {"color_temp_kelvin": int(pre_off["color_temp_kelvin"]), "color_mode": "color_temp"}
+                if color_mode == "color_temp"
+                else {"hs_color": [float(pre_off["hs_color"][0]), float(pre_off["hs_color"][1])], "color_mode": "hs"}
+            )
+            _publish_input_command(
+                client,
+                controller_id,
+                "set_color_inputs",
+                stage_targets,
+                brightness=int(round(255.0 * (float(pre_off["brightness_pct"]) / 100.0))),
+                color_payload=color_payload,
+            )
+            time.sleep(PRE_OFF_STAGE_DELAY_SECONDS)
+
+    _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+
+
 def _select_color_mode(modes: list[str], color_payload: dict) -> str | None:
     if color_payload.get("__prefer_color_temp") and (
         "color_temp" in color_payload or "color_temp_kelvin" in color_payload
@@ -1787,6 +1867,7 @@ def main() -> None:
 
     def _handle_away_mode(
         controller_id: str,
+        controller_cfg: dict | None,
         states: dict,
         master_cfg: dict,
         smooth_brightness: int | None,
@@ -1806,7 +1887,7 @@ def main() -> None:
             away_state.pop(controller_id, None)
             targets = _targets_all(states)
             if targets:
-                _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+                _publish_turn_off_with_pre_stage(client, controller_id, controller_cfg, states, targets)
             away_payload = {
                 "active": True,
                 "on": False,
@@ -1849,7 +1930,7 @@ def main() -> None:
             if brightness is None and color_payload is None:
                 _publish_input_command(client, controller_id, "turn_on_inputs", targets)
         elif not current_on and state_changed and targets:
-            _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+            _publish_turn_off_with_pre_stage(client, controller_id, controller_cfg, states, targets)
         if current_on and targets:
             brightness = smooth_brightness if brightness_enabled else None
             color_payload = (
@@ -2889,7 +2970,7 @@ def main() -> None:
                         if isinstance(configured, list):
                             targets = [str(entity_id) for entity_id in configured if isinstance(entity_id, str) and entity_id]
                     if targets:
-                        _publish_input_command(client, controller_id, "turn_off_inputs", targets)
+                        _publish_turn_off_with_pre_stage(client, controller_id, controller_cfg, states, targets)
                     away_state.pop(controller_id, None)
                     away_payload = {
                         "active": False,
@@ -2935,6 +3016,7 @@ def main() -> None:
                 if mode_value == "Away":
                     _handle_away_mode(
                         controller_id,
+                        controller_cfg,
                         states,
                         master,
                         smooth_brightness,
@@ -3027,7 +3109,13 @@ def main() -> None:
                         color_temp_enabled=False,
                         persist=True,
                     )
-                _publish_input_command(client, controller_id, "turn_off_inputs", _targets_all(states))
+                _publish_turn_off_with_pre_stage(
+                    client,
+                    controller_id,
+                    controller_cfg,
+                    states,
+                    _targets_all(states),
+                )
                 if controller_cfg:
                     _publish_circadian_targets(
                         controller_id,

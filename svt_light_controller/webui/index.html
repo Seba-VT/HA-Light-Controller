@@ -465,6 +465,40 @@
                 </label>
               </div>
             </div>
+            <div class="weather-panel">
+              <div class="curve-header">
+                <span>Pre-Off Staging</span>
+              </div>
+              <div class="weather-grid">
+                <label class="toggle-row curve-toggle" title="When enabled, apply these values right before turning lights off to reduce startup flash on next turn-on.">
+                  <input type="checkbox" id="pre-off-enabled" />
+                  Enable pre-off staging
+                </label>
+                <label title="Brightness used for the pre-off staging command.">
+                  Brightness (%)
+                  <input type="number" id="pre-off-brightness" min="1" max="100" step="1" value="1" />
+                </label>
+                <label title="Choose whether pre-off staging uses color temperature or hue/saturation.">
+                  Color mode
+                  <select id="pre-off-color-mode">
+                    <option value="hs">Hue/Saturation</option>
+                    <option value="color_temp">Color Temp</option>
+                  </select>
+                </label>
+                <label title="Color temperature used when Color mode is set to Color Temp.">
+                  Color temp (K)
+                  <input type="number" id="pre-off-ct" min="1500" max="8000" step="10" value="2200" />
+                </label>
+                <label title="Hue used when Color mode is set to Hue/Saturation.">
+                  Color hue
+                  <input type="number" id="pre-off-hue" min="0" max="360" step="1" value="0" />
+                </label>
+                <label title="Saturation used when Color mode is set to Hue/Saturation.">
+                  Color saturation
+                  <input type="number" id="pre-off-sat" min="0" max="100" step="1" value="100" />
+                </label>
+              </div>
+            </div>
           </div>
 
           <div class="form-actions">
@@ -478,7 +512,7 @@
   </div>
 
   <script src="vendor/tabulator/tabulator.min.js"></script>
-  <script src="app.js?v=20260124-16"></script>
+  <script src="app.js?v=20260302-17"></script>
 </body>
 </html>
 
