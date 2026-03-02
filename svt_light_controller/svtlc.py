@@ -1528,7 +1528,8 @@ def _publish_input_command(
         for key, entry in list(RETRY_PENDING.items()):
             if entry.get("controller_id") == controller_id:
                 RETRY_PENDING.pop(key, None)
-        _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect, transition)
+        if command != "turn_off_inputs":
+            _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect, transition)
         if command == "turn_on_inputs" and targets:
             entry = LAST_ON_COMMAND.setdefault(controller_id, {})
             now_ts = time.time()
