@@ -2785,7 +2785,7 @@ def main() -> None:
                     brightness,
                     color_payload,
                     only_on=True,
-                    transition=_controller_transition_seconds(controller_cfg),
+                    transition=_controller_transition_seconds(controller),
                 )
 
             last_circadian[controller_id] = {"brightness": brightness, "color_temp": color_temp}
