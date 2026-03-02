@@ -14,6 +14,7 @@ ATTR_COLOR_TEMP_KELVIN = getattr(light_platform, "ATTR_COLOR_TEMP_KELVIN", "colo
 ATTR_HS_COLOR = light_platform.ATTR_HS_COLOR
 ATTR_RGB_COLOR = light_platform.ATTR_RGB_COLOR
 ATTR_EFFECT = light_platform.ATTR_EFFECT
+ATTR_TRANSITION = getattr(light_platform, "ATTR_TRANSITION", "transition")
 ATTR_RGBW_COLOR = getattr(light_platform, "ATTR_RGBW_COLOR", None)
 ATTR_RGBWW_COLOR = getattr(light_platform, "ATTR_RGBWW_COLOR", None)
 ATTR_XY_COLOR = light_platform.ATTR_XY_COLOR
@@ -596,6 +597,7 @@ class SvtLightControllerLight(LightEntity):
             xy_color = payload.get("xy_color")
             color_temp = payload.get("color_temp")
             color_temp_kelvin = payload.get("color_temp_kelvin")
+            transition = payload.get("transition")
         else:
             if isinstance(msg.payload, (bytes, bytearray)):
                 payload_text = msg.payload.decode("utf-8", "ignore")
@@ -613,6 +615,7 @@ class SvtLightControllerLight(LightEntity):
             xy_color = None
             color_temp = None
             color_temp_kelvin = None
+            transition = None
 
         if command not in {
             "turn_off_inputs",
@@ -663,6 +666,8 @@ class SvtLightControllerLight(LightEntity):
         else:
             service = "turn_on" if command == "turn_on_inputs" else "turn_off"
             data = {"entity_id": targets}
+        if isinstance(transition, (int, float)):
+            data[ATTR_TRANSITION] = float(transition)
 
         self._hass.async_create_task(
             self._hass.services.async_call(
