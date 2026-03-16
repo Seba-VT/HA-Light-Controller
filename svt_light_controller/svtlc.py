@@ -585,6 +585,16 @@ def _retry_key(controller_id: str, command: str, targets: list[str]) -> str:
     return f"{controller_id}:{command}:{normalized}"
 
 
+def _clear_retry_entries(controller_id: str | None = None) -> None:
+    if controller_id is None:
+        RETRY_PENDING.clear()
+        return
+
+    for key, entry in list(RETRY_PENDING.items()):
+        if entry.get("controller_id") == controller_id:
+            RETRY_PENDING.pop(key, None)
+
+
 def _queue_retry_entry(
     controller_id: str,
     command: str,
@@ -1524,10 +1534,8 @@ def _publish_input_command(
         payload["transition"] = float(transition)
     client.publish(output_topic, json.dumps(payload), qos=0, retain=False)
     if track:
-        # Cancel any pending retries for this controller when a new command is issued.
-        for key, entry in list(RETRY_PENDING.items()):
-            if entry.get("controller_id") == controller_id:
-                RETRY_PENDING.pop(key, None)
+        # Any newly issued command supersedes prior retry intent for this controller.
+        _clear_retry_entries(controller_id)
         if command != "turn_off_inputs":
             _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect, transition)
         if command == "turn_on_inputs" and targets:
@@ -3380,6 +3388,8 @@ def main() -> None:
         payload = _parse_payload(msg.payload)
         prev_states = last_inputs.get(controller_id, {})
         states = payload.get("states", {}) if isinstance(payload, dict) else {}
+        # Any fresh state update from inputs invalidates pending retries for this controller.
+        _clear_retry_entries(controller_id)
         newly_available = []
         external_on = []
         manual_color_change = False
