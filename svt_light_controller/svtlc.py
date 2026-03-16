@@ -48,9 +48,11 @@ RETRY_TOLERANCES = {
 }
 LAST_COLOR_COMMAND: dict[str, dict[str, dict]] = {}
 LAST_ON_COMMAND: dict[str, dict[str, float]] = {}
+LAST_OFF_COMMAND: dict[str, dict[str, float]] = {}
 MANUAL_CT_DELTA_K = 75
 MANUAL_CMD_GRACE_SECONDS = 30.0
 PRE_OFF_STAGE_DELAY_SECONDS = 0.3
+OFF_TO_ON_SUPPRESS_SECONDS = 5.0
 
 
 def _load_options() -> dict:
@@ -1540,6 +1542,17 @@ def _publish_input_command(
             _queue_retry_entry(controller_id, command, targets, brightness, color_payload, effect, transition)
         if command == "turn_on_inputs" and targets:
             entry = LAST_ON_COMMAND.setdefault(controller_id, {})
+            now_ts = time.time()
+            for target in targets:
+                entry[target] = now_ts
+            off_entry = LAST_OFF_COMMAND.get(controller_id)
+            if off_entry:
+                for target in targets:
+                    off_entry.pop(target, None)
+                if not off_entry:
+                    LAST_OFF_COMMAND.pop(controller_id, None)
+        if command == "turn_off_inputs" and targets:
+            entry = LAST_OFF_COMMAND.setdefault(controller_id, {})
             now_ts = time.time()
             for target in targets:
                 entry[target] = now_ts
@@ -3407,6 +3420,9 @@ def main() -> None:
                 prev_state = str(prev_value.get("state", "")).strip().lower()
                 current_state = str(value.get("state", "")).strip().lower()
                 if prev_state != "on" and current_state == "on":
+                    off_stamp = LAST_OFF_COMMAND.get(controller_id, {}).get(entity_id)
+                    if off_stamp and (time.time() - float(off_stamp)) <= OFF_TO_ON_SUPPRESS_SECONDS:
+                        continue
                     external_on.append(entity_id)
                 if prev_state != "on":
                     continue
