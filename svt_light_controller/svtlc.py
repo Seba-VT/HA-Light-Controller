@@ -52,7 +52,7 @@ LAST_OFF_COMMAND: dict[str, dict[str, float]] = {}
 MANUAL_CT_DELTA_K = 75
 MANUAL_CMD_GRACE_SECONDS = 30.0
 PRE_OFF_STAGE_DELAY_SECONDS = 0.3
-OFF_TO_ON_SUPPRESS_SECONDS = 5.0
+OFF_TO_ON_SUPPRESS_SECONDS = 30.0
 
 
 def _load_options() -> dict:
@@ -3201,6 +3201,11 @@ def main() -> None:
                     states,
                     _targets_all(states),
                 )
+                # Publish off immediately so desired state does not remain stale "on"
+                # while waiting for the next inputs snapshot.
+                off_payload = {"state": "off"}
+                if last_output.get(controller_id) != off_payload:
+                    last_output[controller_id] = _publish_output_state(client, controller_id, off_payload)
                 if controller_cfg:
                     _publish_circadian_targets(
                         controller_id,
