@@ -53,6 +53,7 @@ MANUAL_CT_DELTA_K = 75
 MANUAL_CMD_GRACE_SECONDS = 30.0
 PRE_OFF_STAGE_DELAY_SECONDS = 0.3
 OFF_TO_ON_SUPPRESS_SECONDS = 30.0
+OFF_REBOUND_FORCE_OFF_SECONDS = 12.0
 
 
 def _load_options() -> dict:
@@ -3410,6 +3411,7 @@ def main() -> None:
         _clear_retry_entries(controller_id)
         newly_available = []
         external_on = []
+        rebound_on = []
         manual_color_change = False
         manual_change_details = []
         if isinstance(states, dict):
@@ -3427,6 +3429,7 @@ def main() -> None:
                 if prev_state != "on" and current_state == "on":
                     off_stamp = LAST_OFF_COMMAND.get(controller_id, {}).get(entity_id)
                     if off_stamp and (time.time() - float(off_stamp)) <= OFF_TO_ON_SUPPRESS_SECONDS:
+                        rebound_on.append(entity_id)
                         continue
                     external_on.append(entity_id)
                 if prev_state != "on":
@@ -3524,6 +3527,27 @@ def main() -> None:
             logger.warning("Ignoring inputs for unknown controller %s (stale retained MQTT data?)", controller_id)
             return
         transition_seconds = _controller_transition_seconds(controller_cfg)
+        if rebound_on:
+            to_force_off: list[str] = []
+            now_ts = time.time()
+            off_entry = LAST_OFF_COMMAND.get(controller_id, {})
+            for entity_id in rebound_on:
+                off_stamp = off_entry.get(entity_id)
+                if off_stamp and (now_ts - float(off_stamp)) <= OFF_REBOUND_FORCE_OFF_SECONDS:
+                    to_force_off.append(entity_id)
+            if to_force_off:
+                logger.info(
+                    "Post-off rebound detected for %s, forcing off: %s",
+                    controller_id,
+                    to_force_off,
+                )
+                _publish_input_command(
+                    client,
+                    controller_id,
+                    "turn_off_inputs",
+                    to_force_off,
+                    transition=transition_seconds,
+                )
         smooth_brightness = None
         smooth_ct = None
         if controller_cfg:
