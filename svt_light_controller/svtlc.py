@@ -3218,6 +3218,13 @@ def main() -> None:
                     )
             elif event == "manual_on":
                 targets = _targets_all(states)
+                # Explicit manual ON should cancel recent OFF suppression for these targets.
+                off_entry = LAST_OFF_COMMAND.get(controller_id)
+                if off_entry:
+                    for target in targets:
+                        off_entry.pop(target, None)
+                    if not off_entry:
+                        LAST_OFF_COMMAND.pop(controller_id, None)
                 controllers, master = _load_controller_cache()
                 controller_cfg = next(
                     (
