@@ -263,27 +263,10 @@ def _normalize_mode(value: str | None) -> str:
 
 
 def _update_mode(controller_id: str, mode: str) -> bool:
-    payload = _load_controllers_config()
-    updated = False
-    normalized = _normalize_mode(mode)
-
-    for controller in payload.get("controllers", []):
-        if not isinstance(controller, dict):
-            continue
-        unique_id = controller.get("unique_id") or controller.get("name")
-        if not isinstance(unique_id, str) or not unique_id:
-            continue
-        if _normalize_controller_id(unique_id) != controller_id:
-            continue
-
-        if controller.get("mode") != normalized:
-            controller["mode"] = normalized
-            updated = True
-
-    if updated:
-        _write_config_payload(payload)
-
-    return updated
+    # Temporary mitigation: avoid persistent writes to controller config from MQTT
+    # mode updates to prevent write-path crashes from resetting active controllers.
+    _normalize_mode(mode)
+    return False
 
 
 def _set_mode_local(controller_id: str, mode: str, last_modes: dict[str, dict]) -> None:
