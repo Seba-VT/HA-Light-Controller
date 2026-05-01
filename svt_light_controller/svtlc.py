@@ -6,6 +6,8 @@ import math
 import os
 import random
 import statistics
+import tempfile
+import threading
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -54,6 +56,8 @@ MANUAL_CMD_GRACE_SECONDS = 30.0
 PRE_OFF_STAGE_DELAY_SECONDS = 0.3
 OFF_TO_ON_SUPPRESS_SECONDS = 30.0
 OFF_REBOUND_FORCE_OFF_SECONDS = 12.0
+CONFIG_WRITE_LOCK = threading.Lock()
+RUNTIME_WRITE_LOCK = threading.Lock()
 
 
 def _load_options() -> dict:
@@ -105,16 +109,21 @@ def _load_controllers_config() -> dict:
 
 
 def _write_config_payload(payload: dict) -> None:
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    tmp_path = f"{CONFIG_PATH}.tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        os.replace(tmp_path, CONFIG_PATH)
-    except FileNotFoundError:
-        # Fallback for intermittent tmp-file rename failures under HA mount.
-        with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
+    with CONFIG_WRITE_LOCK:
+        target_dir = os.path.dirname(CONFIG_PATH)
+        os.makedirs(target_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f"{os.path.basename(CONFIG_PATH)}.",
+            suffix=".tmp",
+            dir=target_dir,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+            os.replace(tmp_path, CONFIG_PATH)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
 
 def _read_runtime_payload() -> dict:
@@ -141,20 +150,30 @@ def _read_runtime_payload() -> dict:
 
 
 def _write_runtime_payload(payload: dict) -> None:
-    current = _read_runtime_payload()
-    if "modes" in payload and isinstance(payload.get("modes"), dict):
-        modes = current.get("modes", {})
-        if not isinstance(modes, dict):
-            modes = {}
-        modes.update(payload["modes"])
-        current["modes"] = modes
-        payload = {k: v for k, v in payload.items() if k != "modes"}
-    current.update(payload)
-    os.makedirs(os.path.dirname(RUNTIME_PATH), exist_ok=True)
-    tmp_path = f"{RUNTIME_PATH}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(current, handle, indent=2)
-    os.replace(tmp_path, RUNTIME_PATH)
+    with RUNTIME_WRITE_LOCK:
+        current = _read_runtime_payload()
+        if "modes" in payload and isinstance(payload.get("modes"), dict):
+            modes = current.get("modes", {})
+            if not isinstance(modes, dict):
+                modes = {}
+            modes.update(payload["modes"])
+            current["modes"] = modes
+            payload = {k: v for k, v in payload.items() if k != "modes"}
+        current.update(payload)
+        target_dir = os.path.dirname(RUNTIME_PATH)
+        os.makedirs(target_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f"{os.path.basename(RUNTIME_PATH)}.",
+            suffix=".tmp",
+            dir=target_dir,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(current, handle, indent=2)
+            os.replace(tmp_path, RUNTIME_PATH)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
 
 def _update_circadian_settings(controller_id: str, brightness_enabled: bool | None, color_temp_enabled: bool | None) -> bool:
@@ -268,10 +287,27 @@ def _normalize_mode(value: str | None) -> str:
 
 
 def _update_mode(controller_id: str, mode: str) -> bool:
-    # Temporary mitigation: avoid persistent writes to controller config from MQTT
-    # mode updates to prevent write-path crashes from resetting active controllers.
-    _normalize_mode(mode)
-    return False
+    payload = _load_controllers_config()
+    updated = False
+    normalized = _normalize_mode(mode)
+
+    for controller in payload.get("controllers", []):
+        if not isinstance(controller, dict):
+            continue
+        unique_id = controller.get("unique_id") or controller.get("name")
+        if not isinstance(unique_id, str) or not unique_id:
+            continue
+        if _normalize_controller_id(unique_id) != controller_id:
+            continue
+
+        if controller.get("mode") != normalized:
+            controller["mode"] = normalized
+            updated = True
+
+    if updated:
+        _write_config_payload(payload)
+
+    return updated
 
 
 def _set_mode_local(controller_id: str, mode: str, last_modes: dict[str, dict]) -> None:
