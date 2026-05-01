@@ -107,9 +107,14 @@ def _load_controllers_config() -> dict:
 def _write_config_payload(payload: dict) -> None:
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     tmp_path = f"{CONFIG_PATH}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-    os.replace(tmp_path, CONFIG_PATH)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        os.replace(tmp_path, CONFIG_PATH)
+    except FileNotFoundError:
+        # Fallback for intermittent tmp-file rename failures under HA mount.
+        with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
 
 
 def _read_runtime_payload() -> dict:
