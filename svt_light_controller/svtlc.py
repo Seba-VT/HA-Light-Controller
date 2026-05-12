@@ -1036,6 +1036,9 @@ def _today_sun_times(now: datetime, sun_attrs: dict | None) -> tuple[float | Non
 
     sunrise = next_rising if next_rising.date() == now.date() else next_rising - timedelta(days=1)
     sunset = next_setting if next_setting.date() == now.date() else next_setting - timedelta(days=1)
+    # sun.sun timestamps are UTC; convert to local time before turning into minute-of-day.
+    sunrise = sunrise.astimezone(now.tzinfo)
+    sunset = sunset.astimezone(now.tzinfo)
     return (
         sunrise.hour * 60 + sunrise.minute + sunrise.second / 60.0,
         sunset.hour * 60 + sunset.minute + sunset.second / 60.0,
