@@ -84,6 +84,24 @@ class SvtLightControllerSensorManager:
             controller_id = _normalize_unique_id(unique_id)
 
             for kind in ("brightness", "color_temp"):
+                entity_id = f"{controller_id}_current_{kind}"
+                next_ids.add(entity_id)
+
+                if entity_id in self._entities:
+                    await self._entities[entity_id].async_apply_config(name, input_lights)
+                    continue
+
+                entity = SvtLightControllerCurrentOutputSensor(
+                    name=name,
+                    unique_id=unique_id,
+                    input_lights=input_lights,
+                    kind=kind,
+                    hass=self._hass,
+                )
+                self._entities[entity_id] = entity
+                new_entities.append(entity)
+
+            for kind in ("brightness", "color_temp"):
                 variants = ("target", "raw") if kind == "brightness" else ("target", "weather", "raw")
                 for variant in variants:
                     entity_id = f"{controller_id}_{kind}_{variant}"
@@ -157,6 +175,138 @@ class SvtLightControllerSensorManager:
             entity_registry = er.async_get(self._hass)
             if entity_registry.async_get(entity.entity_id):
                 entity_registry.async_remove(entity.entity_id)
+
+
+class SvtLightControllerCurrentOutputSensor(SensorEntity):
+    """Read-only sensor entity for current controller output values."""
+
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        name: str,
+        unique_id: str,
+        input_lights: list[str],
+        kind: str,
+        hass: HomeAssistant,
+    ) -> None:
+        self._input_lights = input_lights
+        self._hass = hass
+        self._controller_id = _normalize_unique_id(unique_id)
+        self._controller_slug = _controller_slug(self._controller_id)
+        self._kind = kind
+        self._device_name = f"SVTLC {name}"
+        self._attr_unique_id = f"{self._controller_id}_current_{kind}"
+        self._attr_object_id = f"svtlc_current_{kind}_{self._controller_slug}"
+        if kind == "brightness":
+            self._attr_name = "Current Brightness"
+            self._attr_icon = "mdi:brightness-6"
+            self._attr_native_unit_of_measurement = PERCENTAGE
+        else:
+            self._attr_name = "Current Color Temp"
+            self._attr_icon = "mdi:thermometer"
+            self._attr_native_unit_of_measurement = UnitOfTemperature.KELVIN
+        self._topic_state = f"svtlc/{self._controller_id}/output"
+        self._unsub_mqtt = None
+        self._attr_native_value = None
+        self._attrs: dict = {}
+
+    async def async_apply_config(self, name: str, input_lights: list[str]) -> None:
+        self._device_name = f"SVTLC {name}"
+        self._input_lights = input_lights
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._controller_id)},
+            "name": self._device_name,
+            "manufacturer": "SVT",
+            "model": "SVT Light Controller",
+        }
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        attrs = {
+            "input_lights": self._input_lights,
+            "controller_id": self._controller_id,
+            "mqtt_topic_state": self._topic_state,
+        }
+        attrs.update(self._attrs)
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        await self._ensure_device_link()
+        self._ensure_entity_id()
+        self._unsub_mqtt = await mqtt.async_subscribe(
+            self._hass,
+            self._topic_state,
+            self._handle_mqtt_state,
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_mqtt:
+            self._unsub_mqtt()
+            self._unsub_mqtt = None
+
+    @callback
+    def _handle_mqtt_state(self, msg) -> None:
+        payload = _parse_json_payload(msg.payload)
+        if not payload:
+            return
+
+        state = str(payload.get("state", "")).strip().lower()
+        is_on = state in {"on", "true", "1", "yes"}
+        if self._kind == "brightness":
+            value = payload.get("brightness") if is_on else None
+            self._attr_native_value = (
+                int(round((float(value) / 255.0) * 100.0))
+                if isinstance(value, (int, float))
+                else None
+            )
+        else:
+            value = payload.get("color_temp_kelvin") if is_on else None
+            self._attr_native_value = int(round(float(value))) if isinstance(value, (int, float)) else None
+
+        self._attrs = {
+            "controller_state": state or None,
+            "brightness_raw": payload.get("brightness"),
+            "color_mode": payload.get("color_mode"),
+            "color_temp_kelvin": payload.get("color_temp_kelvin"),
+        }
+        self.async_write_ha_state()
+
+    async def _ensure_device_link(self) -> None:
+        try:
+            entries = self._hass.config_entries.async_entries(DOMAIN)
+            if not entries:
+                return
+            config_entry_id = entries[0].entry_id
+
+            device_registry = dr.async_get(self._hass)
+            device = device_registry.async_get_or_create(
+                config_entry_id=config_entry_id,
+                identifiers={(DOMAIN, self._controller_id)},
+                name=self._device_name,
+                manufacturer="SVT",
+                model="SVT Light Controller",
+            )
+
+            entity_registry = er.async_get(self._hass)
+            entity = entity_registry.async_get(self.entity_id)
+            if entity and entity.device_id != device.id:
+                entity_registry.async_update_entity(self.entity_id, device_id=device.id)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to link SVTLC device")
+
+    def _ensure_entity_id(self) -> None:
+        try:
+            entity_registry = er.async_get(self._hass)
+            desired = f"sensor.{self._attr_object_id}"
+            if self.entity_id != desired and desired not in entity_registry.entities:
+                entity_registry.async_update_entity(self.entity_id, new_entity_id=desired)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to update SVTLC current output entity_id")
 
 
 class SvtLightControllerCircadianSensor(SensorEntity):

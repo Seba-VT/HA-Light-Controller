@@ -1,7 +1,7 @@
 {
   "domain": "svt_light_controller",
   "name": "SVT Light Controller",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "documentation": "https://example.com/svt_light_controller",
   "requirements": [],
   "codeowners": [],
