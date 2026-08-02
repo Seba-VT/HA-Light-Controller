@@ -1664,7 +1664,7 @@ def _publish_turn_off_with_pre_stage(
                 stage_targets,
                 brightness=int(round(255.0 * (float(pre_off["brightness_pct"]) / 100.0))),
                 color_payload=color_payload,
-                transition=None,
+                transition=transition,
             )
             time.sleep(PRE_OFF_STAGE_DELAY_SECONDS)
 
