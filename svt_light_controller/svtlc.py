@@ -3582,6 +3582,16 @@ def main() -> None:
                     to_force_off,
                     transition=transition_seconds,
                 )
+                # A rejected rebound is not a new request to turn on. Keep it
+                # off in the control snapshot so Sleep (and periodic ticks)
+                # cannot immediately undo the protective off command.
+                states = {
+                    entity_id: {**value, "state": "off", "brightness": None}
+                    if entity_id in to_force_off else value
+                    for entity_id, value in states.items()
+                }
+                last_inputs[controller_id] = states
+                output_state, output_brightness = _state_from_inputs(states)
         smooth_brightness = None
         smooth_ct = None
         if controller_cfg:
