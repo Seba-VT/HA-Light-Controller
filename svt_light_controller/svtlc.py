@@ -1645,11 +1645,10 @@ def _publish_turn_off_with_pre_stage(
     pre_off = _normalize_pre_off_config(controller_cfg)
     transition = _controller_transition_seconds(controller_cfg)
     if pre_off.get("enabled"):
-        stage_targets = list(targets)
-        if isinstance(states, dict) and states:
-            on_targets = set(_targets_on(states))
-            if on_targets:
-                stage_targets = [entity_id for entity_id in targets if entity_id in on_targets]
+        # Color/brightness commands turn lights on. Only pre-stage targets
+        # confirmed on; an empty or unknown snapshot must never light them.
+        on_targets = set(_targets_on(states)) if isinstance(states, dict) else set()
+        stage_targets = [entity_id for entity_id in targets if entity_id in on_targets]
         if stage_targets:
             color_mode = pre_off.get("color_mode")
             color_payload = (
